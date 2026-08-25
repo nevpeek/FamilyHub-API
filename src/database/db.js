@@ -68,6 +68,32 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_event_members_member
     ON event_members(family_member_id);
+
+  CREATE TABLE IF NOT EXISTS event_exceptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    occurrence_date TEXT NOT NULL,
+    exception_type TEXT NOT NULL,
+    replacement_event_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (event_id, occurrence_date),
+
+    FOREIGN KEY (event_id)
+      REFERENCES events(id)
+      ON DELETE CASCADE,
+
+    FOREIGN KEY (replacement_event_id)
+      REFERENCES events(id)
+      ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_event_exceptions_event
+    ON event_exceptions(event_id);
+
+  CREATE INDEX IF NOT EXISTS idx_event_exceptions_date
+    ON event_exceptions(occurrence_date);
+
 `);
 
 function addColumnIfMissing(tableName, columnName, definition) {

@@ -192,6 +192,24 @@ function createOccurrence(baseEvent, occurrenceDate) {
 function expandRecurringEvent(baseEvent, rangeStart, rangeEnd) {
   const results = [];
 
+  const exceptions = db
+    .prepare(`
+      SELECT
+        occurrence_date,
+        exception_type,
+        replacement_event_id
+      FROM event_exceptions
+      WHERE event_id = ?
+    `)
+    .all(baseEvent.id);
+
+  const exceptionsByDate = new Map(
+    exceptions.map((exception) => [
+      exception.occurrence_date,
+      exception,
+    ])
+  );
+
   const firstDate = parseDateOnly(baseEvent.start_date);
 
   if (!firstDate) {
@@ -219,11 +237,35 @@ function expandRecurringEvent(baseEvent, rangeStart, rangeEnd) {
       break;
     }
 
-    if (currentDate >= rangeStart) {
-      results.push(
-        createOccurrence(baseEvent, currentDate)
-      );
+   if (currentDate >= rangeStart) {
+  const occurrenceDateKey = formatDateOnly(currentDate);
+  const exception = exceptionsByDate.get(occurrenceDateKey);
+
+  if (!exception) {
+    results.push(
+      createOccurrence(baseEvent, currentDate)
+    );
+  } else if (
+    exception.exception_type === "replacement" &&
+    exception.replacement_event_id
+  ) {
+    const replacementEvent = getEventById(
+      exception.replacement_event_id
+    );
+
+    if (replacementEvent) {
+      results.push({
+        ...replacementEvent,
+        occurrence_date: occurrenceDateKey,
+        occurrence_key:
+          `${baseEvent.id}:${occurrenceDateKey}:replacement`,
+        series_event_id: baseEvent.id,
+        is_occurrence: true,
+        is_exception: true,
+      });
     }
+  }
+}
 
     const nextDate = getNextOccurrenceDate(
       currentDate,
@@ -341,22 +383,13 @@ router.get("/", (req, res) => {
     SELECT DISTINCT
       e.id
     FROM events e
-    LEFT JOIN event_members em
-      ON em.event_id = e.id
     WHERE e.start_date <= ?
+      AND e.series_id IS NULL
   `;
 
   const params = [
     formatDateOnly(rangeEnd),
   ];
-
-  if (memberId) {
-    sql += `
-      AND em.family_member_id = ?
-    `;
-
-    params.push(Number(memberId));
-  }
 
   sql += `
     ORDER BY e.start_date ASC
@@ -407,7 +440,15 @@ router.get("/", (req, res) => {
     }
   }
 
-  events.sort((a, b) => {
+  const filteredEvents = memberId
+    ? events.filter((event) =>
+        event.members.some(
+          (member) => member.id === Number(memberId)
+        )
+      )
+    : events;
+
+    filteredEvents.sort((a, b) => {
     const dateCompare =
       a.start_date.localeCompare(b.start_date);
 
@@ -431,9 +472,9 @@ router.get("/", (req, res) => {
     return a.title.localeCompare(b.title);
   });
 
-  res.json({
+   res.json({
     success: true,
-    events,
+    events: filteredEvents,
   });
 });
 
@@ -676,6 +717,301 @@ router.put("/:id", (req, res) => {
   res.json({
     success: true,
     event: getEventById(eventId),
+  });
+});
+
+router.put("/:id/occurrences/:date", (req, res) => {
+  const seriesEventId = Number(req.params.id);
+  const occurrenceDate = req.params.date;
+
+  const seriesEvent = getEventById(seriesEventId);
+
+  if (!seriesEvent) {
+    return res.status(404).json({
+      success: false,
+      error: "Event not found",
+    });
+  }
+
+  if (
+    !seriesEvent.is_recurring ||
+    !seriesEvent.recurrence_rule
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Event is not recurring",
+    });
+  }
+
+  if (!parseDateOnly(occurrenceDate)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid occurrence date",
+    });
+  }
+
+  const {
+    title,
+    description = null,
+    startDate,
+    startTime = null,
+    endDate = null,
+    endTime = null,
+    allDay = false,
+    location = null,
+    category = "other",
+    memberIds = [],
+  } = req.body;
+
+  if (!title || !title.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: "Title is required",
+    });
+  }
+
+  if (!startDate) {
+    return res.status(400).json({
+      success: false,
+      error: "Start date is required",
+    });
+  }
+
+  const memberValidation =
+    validateMemberIds(memberIds);
+
+  if (!memberValidation.valid) {
+    return res.status(400).json({
+      success: false,
+      error: memberValidation.error,
+    });
+  }
+
+  const saveReplacement = db.transaction(() => {
+    const existingException = db
+      .prepare(`
+        SELECT
+          id,
+          replacement_event_id
+        FROM event_exceptions
+        WHERE event_id = ?
+          AND occurrence_date = ?
+      `)
+      .get(
+        seriesEventId,
+        occurrenceDate
+      );
+
+    let replacementEventId =
+      existingException?.replacement_event_id
+        ? Number(existingException.replacement_event_id)
+        : null;
+
+    if (replacementEventId) {
+      db.prepare(`
+        UPDATE events
+        SET
+          title = ?,
+          description = ?,
+          start_date = ?,
+          start_time = ?,
+          end_date = ?,
+          end_time = ?,
+          all_day = ?,
+          location = ?,
+          category = ?,
+          series_id = ?,
+          is_recurring = 0,
+          recurrence_rule = NULL,
+          recurrence_end_date = NULL,
+          recurrence_count = NULL,
+          recurrence_parent_date = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        title.trim(),
+        description,
+        startDate,
+        allDay ? null : startTime,
+        endDate || startDate,
+        allDay ? null : endTime,
+        allDay ? 1 : 0,
+        location,
+        category,
+        seriesEventId,
+        occurrenceDate,
+        replacementEventId
+      );
+
+      db.prepare(`
+        DELETE FROM event_members
+        WHERE event_id = ?
+      `).run(replacementEventId);
+    } else {
+      const result = db
+        .prepare(`
+          INSERT INTO events (
+            series_id,
+            title,
+            description,
+            start_date,
+            start_time,
+            end_date,
+            end_time,
+            all_day,
+            location,
+            category,
+            is_recurring,
+            recurrence_rule,
+            recurrence_end_date,
+            recurrence_count,
+            recurrence_parent_date
+          )
+          VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            0, NULL, NULL, NULL, ?
+          )
+        `)
+        .run(
+          seriesEventId,
+          title.trim(),
+          description,
+          startDate,
+          allDay ? null : startTime,
+          endDate || startDate,
+          allDay ? null : endTime,
+          allDay ? 1 : 0,
+          location,
+          category,
+          occurrenceDate
+        );
+
+      replacementEventId =
+        Number(result.lastInsertRowid);
+    }
+
+    const insertMember = db.prepare(`
+      INSERT INTO event_members (
+        event_id,
+        family_member_id
+      )
+      VALUES (?, ?)
+    `);
+
+    for (
+      const memberId of memberValidation.memberIds
+    ) {
+      insertMember.run(
+        replacementEventId,
+        memberId
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO event_exceptions (
+        event_id,
+        occurrence_date,
+        exception_type,
+        replacement_event_id
+      )
+      VALUES (?, ?, 'replacement', ?)
+
+      ON CONFLICT(event_id, occurrence_date)
+      DO UPDATE SET
+        exception_type = 'replacement',
+        replacement_event_id = excluded.replacement_event_id
+    `).run(
+      seriesEventId,
+      occurrenceDate,
+      replacementEventId
+    );
+
+    return replacementEventId;
+  });
+
+  const replacementEventId =
+    saveReplacement();
+
+  res.json({
+    success: true,
+    event: getEventById(replacementEventId),
+    seriesEventId,
+    occurrenceDate,
+    status: "replaced",
+  });
+});
+
+router.post("/:id/occurrences/:date/cancel", (req, res) => {
+  const eventId = Number(req.params.id);
+  const occurrenceDate = req.params.date;
+
+  const event = getEventById(eventId);
+
+  if (!event) {
+    return res.status(404).json({
+      success: false,
+      error: "Event not found",
+    });
+  }
+
+  if (!event.is_recurring || !event.recurrence_rule) {
+    return res.status(400).json({
+      success: false,
+      error: "Event is not recurring",
+    });
+  }
+
+  if (!parseDateOnly(occurrenceDate)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid occurrence date",
+    });
+  }
+
+  db.prepare(`
+    INSERT INTO event_exceptions (
+      event_id,
+      occurrence_date,
+      exception_type,
+      replacement_event_id
+    )
+    VALUES (?, ?, 'cancelled', NULL)
+    ON CONFLICT(event_id, occurrence_date)
+    DO UPDATE SET
+      exception_type = 'cancelled',
+      replacement_event_id = NULL
+  `).run(
+    eventId,
+    occurrenceDate
+  );
+
+  res.json({
+    success: true,
+    eventId,
+    occurrenceDate,
+    status: "cancelled",
+  });
+});
+
+router.delete("/:id/occurrences/:date/cancel", (req, res) => {
+  const eventId = Number(req.params.id);
+  const occurrenceDate = req.params.date;
+
+  db.prepare(`
+    DELETE FROM event_exceptions
+    WHERE event_id = ?
+      AND occurrence_date = ?
+      AND exception_type = 'cancelled'
+  `).run(
+    eventId,
+    occurrenceDate
+  );
+
+  res.json({
+    success: true,
+    eventId,
+    occurrenceDate,
+    status: "restored",
   });
 });
 
