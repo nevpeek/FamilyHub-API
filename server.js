@@ -5,6 +5,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const db = require("./src/database/db");
 const familyRoutes = require("./src/routes/familyRoutes");
+const eventRoutes = require("./src/routes/eventRoutes");
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 app.use("/api/family", familyRoutes);
+app.use("/api/events", eventRoutes);
 
 const io = new Server(server, {
   cors: {
