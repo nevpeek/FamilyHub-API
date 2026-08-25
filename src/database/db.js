@@ -27,8 +27,9 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
-  CREATE TABLE IF NOT EXISTS events (
+    CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    series_id INTEGER,
     title TEXT NOT NULL,
     description TEXT,
     start_date TEXT NOT NULL,
@@ -38,6 +39,11 @@ db.exec(`
     all_day INTEGER NOT NULL DEFAULT 0,
     location TEXT,
     category TEXT DEFAULT 'other',
+    is_recurring INTEGER NOT NULL DEFAULT 0,
+    recurrence_rule TEXT,
+    recurrence_end_date TEXT,
+    recurrence_count INTEGER,
+    recurrence_parent_date TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -63,5 +69,31 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_event_members_member
     ON event_members(family_member_id);
 `);
+
+function addColumnIfMissing(tableName, columnName, definition) {
+  const columns = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all();
+
+  const exists = columns.some((column) => column.name === columnName);
+
+  if (!exists) {
+    db.exec(`
+      ALTER TABLE ${tableName}
+      ADD COLUMN ${columnName} ${definition}
+    `);
+  }
+}
+
+addColumnIfMissing("events", "series_id", "INTEGER");
+addColumnIfMissing(
+  "events",
+  "is_recurring",
+  "INTEGER NOT NULL DEFAULT 0"
+);
+addColumnIfMissing("events", "recurrence_rule", "TEXT");
+addColumnIfMissing("events", "recurrence_end_date", "TEXT");
+addColumnIfMissing("events", "recurrence_count", "INTEGER");
+addColumnIfMissing("events", "recurrence_parent_date", "TEXT");
 
 module.exports = db;

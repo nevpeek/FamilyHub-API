@@ -3,11 +3,120 @@ const db = require("../database/db");
 
 const router = express.Router();
 
+const VALID_RECURRENCE_RULES = [
+  "daily",
+  "weekly",
+  "fortnightly",
+  "monthly",
+  "yearly",
+];
+
+function parseDateOnly(value) {
+  if (!value) {
+    return null;
+  }
+
+  const [year, month, day] = value.split("-").map(Number);
+
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatDateOnly(date) {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function addDays(date, amount) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + amount);
+  return next;
+}
+
+function addMonths(date, amount) {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+
+  const target = new Date(Date.UTC(year, month + amount, 1));
+
+  const lastDay = new Date(
+    Date.UTC(
+      target.getUTCFullYear(),
+      target.getUTCMonth() + 1,
+      0
+    )
+  ).getUTCDate();
+
+  target.setUTCDate(Math.min(day, lastDay));
+
+  return target;
+}
+
+function addYears(date, amount) {
+  const year = date.getUTCFullYear() + amount;
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+
+  const target = new Date(Date.UTC(year, month, 1));
+
+  const lastDay = new Date(
+    Date.UTC(year, month + 1, 0)
+  ).getUTCDate();
+
+  target.setUTCDate(Math.min(day, lastDay));
+
+  return target;
+}
+
+function getDayDifference(startDate, endDate) {
+  const start = parseDateOnly(startDate);
+  const end = parseDateOnly(endDate);
+
+  if (!start || !end) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.round((end - start) / 86400000)
+  );
+}
+
+function getNextOccurrenceDate(date, rule) {
+  switch (rule) {
+    case "daily":
+      return addDays(date, 1);
+
+    case "weekly":
+      return addDays(date, 7);
+
+    case "fortnightly":
+      return addDays(date, 14);
+
+    case "monthly":
+      return addMonths(date, 1);
+
+    case "yearly":
+      return addYears(date, 1);
+
+    default:
+      return null;
+  }
+}
+
 function getEventById(id) {
   const event = db
     .prepare(`
       SELECT
         id,
+        series_id,
         title,
         description,
         start_date,
@@ -17,6 +126,11 @@ function getEventById(id) {
         all_day,
         location,
         category,
+        is_recurring,
+        recurrence_rule,
+        recurrence_end_date,
+        recurrence_count,
+        recurrence_parent_date,
         created_at,
         updated_at
       FROM events
@@ -46,7 +160,165 @@ function getEventById(id) {
   return {
     ...event,
     all_day: Boolean(event.all_day),
+    is_recurring: Boolean(event.is_recurring),
     members,
+  };
+}
+
+function createOccurrence(baseEvent, occurrenceDate) {
+  const durationDays = getDayDifference(
+    baseEvent.start_date,
+    baseEvent.end_date || baseEvent.start_date
+  );
+
+  const occurrenceEndDate = addDays(
+    occurrenceDate,
+    durationDays
+  );
+
+  const occurrenceDateKey = formatDateOnly(occurrenceDate);
+
+  return {
+    ...baseEvent,
+    start_date: occurrenceDateKey,
+    end_date: formatDateOnly(occurrenceEndDate),
+    occurrence_date: occurrenceDateKey,
+    occurrence_key: `${baseEvent.id}:${occurrenceDateKey}`,
+    series_event_id: baseEvent.id,
+    is_occurrence: true,
+  };
+}
+
+function expandRecurringEvent(baseEvent, rangeStart, rangeEnd) {
+  const results = [];
+
+  const firstDate = parseDateOnly(baseEvent.start_date);
+
+  if (!firstDate) {
+    return results;
+  }
+
+  const recurrenceEnd = parseDateOnly(
+    baseEvent.recurrence_end_date
+  );
+
+  const maxCount =
+    Number(baseEvent.recurrence_count) > 0
+      ? Number(baseEvent.recurrence_count)
+      : null;
+
+  let currentDate = firstDate;
+  let occurrenceNumber = 1;
+
+  while (currentDate <= rangeEnd) {
+    if (recurrenceEnd && currentDate > recurrenceEnd) {
+      break;
+    }
+
+    if (maxCount && occurrenceNumber > maxCount) {
+      break;
+    }
+
+    if (currentDate >= rangeStart) {
+      results.push(
+        createOccurrence(baseEvent, currentDate)
+      );
+    }
+
+    const nextDate = getNextOccurrenceDate(
+      currentDate,
+      baseEvent.recurrence_rule
+    );
+
+    if (!nextDate || nextDate <= currentDate) {
+      break;
+    }
+
+    currentDate = nextDate;
+    occurrenceNumber += 1;
+
+    // Hard safety limit against malformed recurrence data.
+    if (occurrenceNumber > 5000) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+function normaliseRecurrence(body) {
+  const recurrenceRule =
+    body.recurrenceRule &&
+    VALID_RECURRENCE_RULES.includes(body.recurrenceRule)
+      ? body.recurrenceRule
+      : null;
+
+  const isRecurring = Boolean(recurrenceRule);
+
+  let recurrenceEndDate =
+    isRecurring && body.recurrenceEndDate
+      ? body.recurrenceEndDate
+      : null;
+
+  let recurrenceCount =
+    isRecurring && Number(body.recurrenceCount) > 0
+      ? Math.floor(Number(body.recurrenceCount))
+      : null;
+
+  if (recurrenceCount) {
+    recurrenceEndDate = null;
+  }
+
+  return {
+    isRecurring,
+    recurrenceRule,
+    recurrenceEndDate,
+    recurrenceCount,
+  };
+}
+
+function validateMemberIds(memberIds) {
+  if (!Array.isArray(memberIds) || memberIds.length === 0) {
+    return {
+      valid: false,
+      error: "At least one family member is required",
+    };
+  }
+
+  const uniqueMemberIds = [
+    ...new Set(memberIds.map((id) => Number(id))),
+  ].filter((id) => Number.isInteger(id) && id > 0);
+
+  if (uniqueMemberIds.length === 0) {
+    return {
+      valid: false,
+      error: "At least one valid family member is required",
+    };
+  }
+
+  const placeholders = uniqueMemberIds
+    .map(() => "?")
+    .join(",");
+
+  const validMembers = db
+    .prepare(`
+      SELECT id
+      FROM family_members
+      WHERE id IN (${placeholders})
+        AND is_active = 1
+    `)
+    .all(...uniqueMemberIds);
+
+  if (validMembers.length !== uniqueMemberIds.length) {
+    return {
+      valid: false,
+      error: "One or more family members are invalid",
+    };
+  }
+
+  return {
+    valid: true,
+    memberIds: uniqueMemberIds,
   };
 }
 
@@ -57,47 +329,107 @@ router.get("/", (req, res) => {
     memberId,
   } = req.query;
 
+  const rangeStart =
+    parseDateOnly(start) ||
+    new Date(Date.UTC(1970, 0, 1));
+
+  const rangeEnd =
+    parseDateOnly(end) ||
+    new Date(Date.UTC(2100, 11, 31));
+
   let sql = `
     SELECT DISTINCT
       e.id
     FROM events e
     LEFT JOIN event_members em
       ON em.event_id = e.id
-    WHERE 1 = 1
+    WHERE e.start_date <= ?
   `;
 
-  const params = [];
-
-  if (start) {
-    sql += ` AND e.start_date >= ?`;
-    params.push(start);
-  }
-
-  if (end) {
-    sql += ` AND e.start_date <= ?`;
-    params.push(end);
-  }
+  const params = [
+    formatDateOnly(rangeEnd),
+  ];
 
   if (memberId) {
-    sql += ` AND em.family_member_id = ?`;
+    sql += `
+      AND em.family_member_id = ?
+    `;
+
     params.push(Number(memberId));
   }
 
   sql += `
-    ORDER BY
-      e.start_date ASC,
-      CASE
-        WHEN e.all_day = 1 THEN '00:00'
-        ELSE COALESCE(e.start_time, '23:59')
-      END ASC,
-      e.title ASC
+    ORDER BY e.start_date ASC
   `;
 
-  const rows = db.prepare(sql).all(...params);
+  const rows = db
+    .prepare(sql)
+    .all(...params);
 
-  const events = rows
-    .map((row) => getEventById(row.id))
-    .filter(Boolean);
+  const events = [];
+
+  for (const row of rows) {
+    const event = getEventById(row.id);
+
+    if (!event) {
+      continue;
+    }
+
+    if (
+      event.is_recurring &&
+      event.recurrence_rule
+    ) {
+      events.push(
+        ...expandRecurringEvent(
+          event,
+          rangeStart,
+          rangeEnd
+        )
+      );
+
+      continue;
+    }
+
+    const eventDate = parseDateOnly(event.start_date);
+
+    if (
+      eventDate &&
+      eventDate >= rangeStart &&
+      eventDate <= rangeEnd
+    ) {
+      events.push({
+        ...event,
+        occurrence_date: event.start_date,
+        occurrence_key: `${event.id}:${event.start_date}`,
+        series_event_id: null,
+        is_occurrence: false,
+      });
+    }
+  }
+
+  events.sort((a, b) => {
+    const dateCompare =
+      a.start_date.localeCompare(b.start_date);
+
+    if (dateCompare !== 0) {
+      return dateCompare;
+    }
+
+    if (a.all_day !== b.all_day) {
+      return a.all_day ? -1 : 1;
+    }
+
+    const timeA = a.start_time || "23:59";
+    const timeB = b.start_time || "23:59";
+
+    const timeCompare = timeA.localeCompare(timeB);
+
+    if (timeCompare !== 0) {
+      return timeCompare;
+    }
+
+    return a.title.localeCompare(b.title);
+  });
 
   res.json({
     success: true,
@@ -149,41 +481,22 @@ router.post("/", (req, res) => {
     });
   }
 
-  if (!Array.isArray(memberIds) || memberIds.length === 0) {
+  const memberValidation =
+    validateMemberIds(memberIds);
+
+  if (!memberValidation.valid) {
     return res.status(400).json({
       success: false,
-      error: "At least one family member is required",
+      error: memberValidation.error,
     });
   }
 
-  const uniqueMemberIds = [
-    ...new Set(memberIds.map((id) => Number(id))),
-  ].filter((id) => Number.isInteger(id) && id > 0);
-
-  if (uniqueMemberIds.length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: "At least one valid family member is required",
-    });
-  }
-
-  const placeholders = uniqueMemberIds.map(() => "?").join(",");
-
-  const validMembers = db
-    .prepare(`
-      SELECT id
-      FROM family_members
-      WHERE id IN (${placeholders})
-        AND is_active = 1
-    `)
-    .all(...uniqueMemberIds);
-
-  if (validMembers.length !== uniqueMemberIds.length) {
-    return res.status(400).json({
-      success: false,
-      error: "One or more family members are invalid",
-    });
-  }
+  const {
+    isRecurring,
+    recurrenceRule,
+    recurrenceEndDate,
+    recurrenceCount,
+  } = normaliseRecurrence(req.body);
 
   const createEvent = db.transaction(() => {
     const result = db
@@ -197,23 +510,33 @@ router.post("/", (req, res) => {
           end_time,
           all_day,
           location,
-          category
+          category,
+          is_recurring,
+          recurrence_rule,
+          recurrence_end_date,
+          recurrence_count
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         title.trim(),
         description,
         startDate,
         allDay ? null : startTime,
-        endDate,
+        endDate || startDate,
         allDay ? null : endTime,
         allDay ? 1 : 0,
         location,
-        category
+        category,
+        isRecurring ? 1 : 0,
+        recurrenceRule,
+        recurrenceEndDate,
+        recurrenceCount
       );
 
-    const eventId = Number(result.lastInsertRowid);
+    const eventId = Number(
+      result.lastInsertRowid
+    );
 
     const insertMember = db.prepare(`
       INSERT INTO event_members (
@@ -223,7 +546,7 @@ router.post("/", (req, res) => {
       VALUES (?, ?)
     `);
 
-    for (const memberId of uniqueMemberIds) {
+    for (const memberId of memberValidation.memberIds) {
       insertMember.run(eventId, memberId);
     }
 
@@ -231,11 +554,10 @@ router.post("/", (req, res) => {
   });
 
   const eventId = createEvent();
-  const event = getEventById(eventId);
 
   res.status(201).json({
     success: true,
-    event,
+    event: getEventById(eventId),
   });
 });
 
@@ -278,34 +600,22 @@ router.put("/:id", (req, res) => {
     });
   }
 
-  if (!Array.isArray(memberIds) || memberIds.length === 0) {
+  const memberValidation =
+    validateMemberIds(memberIds);
+
+  if (!memberValidation.valid) {
     return res.status(400).json({
       success: false,
-      error: "At least one family member is required",
+      error: memberValidation.error,
     });
   }
 
-  const uniqueMemberIds = [
-    ...new Set(memberIds.map((id) => Number(id))),
-  ].filter((id) => Number.isInteger(id) && id > 0);
-
-  const placeholders = uniqueMemberIds.map(() => "?").join(",");
-
-  const validMembers = db
-    .prepare(`
-      SELECT id
-      FROM family_members
-      WHERE id IN (${placeholders})
-        AND is_active = 1
-    `)
-    .all(...uniqueMemberIds);
-
-  if (validMembers.length !== uniqueMemberIds.length) {
-    return res.status(400).json({
-      success: false,
-      error: "One or more family members are invalid",
-    });
-  }
+  const {
+    isRecurring,
+    recurrenceRule,
+    recurrenceEndDate,
+    recurrenceCount,
+  } = normaliseRecurrence(req.body);
 
   const updateEvent = db.transaction(() => {
     db.prepare(`
@@ -320,6 +630,10 @@ router.put("/:id", (req, res) => {
         all_day = ?,
         location = ?,
         category = ?,
+        is_recurring = ?,
+        recurrence_rule = ?,
+        recurrence_end_date = ?,
+        recurrence_count = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
@@ -327,11 +641,15 @@ router.put("/:id", (req, res) => {
       description,
       startDate,
       allDay ? null : startTime,
-      endDate,
+      endDate || startDate,
       allDay ? null : endTime,
       allDay ? 1 : 0,
       location,
       category,
+      isRecurring ? 1 : 0,
+      recurrenceRule,
+      recurrenceEndDate,
+      recurrenceCount,
       eventId
     );
 
@@ -348,7 +666,7 @@ router.put("/:id", (req, res) => {
       VALUES (?, ?)
     `);
 
-    for (const memberId of uniqueMemberIds) {
+    for (const memberId of memberValidation.memberIds) {
       insertMember.run(eventId, memberId);
     }
   });
