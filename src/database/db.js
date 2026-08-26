@@ -135,6 +135,44 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_task_members_member
     ON task_members(family_member_id);
 
+
+  CREATE TABLE IF NOT EXISTS meals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    meal_date TEXT NOT NULL,
+    meal_type TEXT NOT NULL DEFAULT 'dinner',
+    description TEXT,
+    recipe_url TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+
+  CREATE TABLE IF NOT EXISTS meal_members (
+    meal_id INTEGER NOT NULL,
+    family_member_id INTEGER NOT NULL,
+
+    PRIMARY KEY (meal_id, family_member_id),
+
+    FOREIGN KEY (meal_id)
+      REFERENCES meals(id)
+      ON DELETE CASCADE,
+
+    FOREIGN KEY (family_member_id)
+      REFERENCES family_members(id)
+      ON DELETE CASCADE
+  );
+
+
+  CREATE INDEX IF NOT EXISTS idx_meals_date
+    ON meals(meal_date);
+
+  CREATE INDEX IF NOT EXISTS idx_meals_type
+    ON meals(meal_type);
+
+  CREATE INDEX IF NOT EXISTS idx_meal_members_member
+    ON meal_members(family_member_id);
+
 `);
 
 function addColumnIfMissing(tableName, columnName, definition) {

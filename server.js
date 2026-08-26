@@ -7,6 +7,7 @@ const db = require("./src/database/db");
 const familyRoutes = require("./src/routes/familyRoutes");
 const eventRoutes = require("./src/routes/eventRoutes");
 const taskRoutes = require("./src/routes/taskRoutes");
+const mealRoutes = require("./src/routes/mealRoutes");
 
 dotenv.config();
 
@@ -21,6 +22,7 @@ app.use(express.json());
 app.use("/api/family", familyRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/tasks", taskRoutes);
+app.use("/api/meals", mealRoutes);
 
 const io = new Server(server, {
   cors: {
