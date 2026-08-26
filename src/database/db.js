@@ -173,6 +173,48 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_meal_members_member
     ON meal_members(family_member_id);
 
+
+  CREATE TABLE IF NOT EXISTS shopping_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    quantity TEXT,
+    category TEXT NOT NULL DEFAULT 'other',
+    notes TEXT,
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+
+  CREATE TABLE IF NOT EXISTS shopping_item_members (
+    shopping_item_id INTEGER NOT NULL,
+    family_member_id INTEGER NOT NULL,
+
+    PRIMARY KEY (
+      shopping_item_id,
+      family_member_id
+    ),
+
+    FOREIGN KEY (shopping_item_id)
+      REFERENCES shopping_items(id)
+      ON DELETE CASCADE,
+
+    FOREIGN KEY (family_member_id)
+      REFERENCES family_members(id)
+      ON DELETE CASCADE
+  );
+
+
+  CREATE INDEX IF NOT EXISTS idx_shopping_items_completed
+    ON shopping_items(is_completed);
+
+  CREATE INDEX IF NOT EXISTS idx_shopping_items_category
+    ON shopping_items(category);
+
+  CREATE INDEX IF NOT EXISTS idx_shopping_item_members_member
+    ON shopping_item_members(family_member_id);
+
 `);
 
 function addColumnIfMissing(tableName, columnName, definition) {
