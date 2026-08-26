@@ -94,6 +94,47 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_event_exceptions_date
     ON event_exceptions(occurrence_date);
 
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT,
+    due_date TEXT,
+    due_time TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    category TEXT DEFAULT 'chore',
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+
+  CREATE TABLE IF NOT EXISTS task_members (
+    task_id INTEGER NOT NULL,
+    family_member_id INTEGER NOT NULL,
+
+    PRIMARY KEY (task_id, family_member_id),
+
+    FOREIGN KEY (task_id)
+      REFERENCES tasks(id)
+      ON DELETE CASCADE,
+
+    FOREIGN KEY (family_member_id)
+      REFERENCES family_members(id)
+      ON DELETE CASCADE
+  );
+
+
+  CREATE INDEX IF NOT EXISTS idx_tasks_due_date
+    ON tasks(due_date);
+
+  CREATE INDEX IF NOT EXISTS idx_tasks_completed
+    ON tasks(is_completed);
+
+  CREATE INDEX IF NOT EXISTS idx_task_members_member
+    ON task_members(family_member_id);
+
 `);
 
 function addColumnIfMissing(tableName, columnName, definition) {

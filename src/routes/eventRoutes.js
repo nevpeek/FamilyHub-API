@@ -720,6 +720,393 @@ router.put("/:id", (req, res) => {
   });
 });
 
+router.put("/:id/occurrences/:date/future", (req, res) => {
+  const seriesEventId = Number(req.params.id);
+  const splitDateKey = req.params.date;
+
+  const seriesEvent = getEventById(seriesEventId);
+
+  if (!seriesEvent) {
+    return res.status(404).json({
+      success: false,
+      error: "Event not found",
+    });
+  }
+
+  if (
+    !seriesEvent.is_recurring ||
+    !seriesEvent.recurrence_rule
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Event is not recurring",
+    });
+  }
+
+  const splitDate = parseDateOnly(splitDateKey);
+  const originalStartDate = parseDateOnly(
+    seriesEvent.start_date
+  );
+
+  if (!splitDate || !originalStartDate) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid occurrence date",
+    });
+  }
+
+  if (splitDate <= originalStartDate) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Use Edit Series when changing the first occurrence",
+    });
+  }
+
+  const {
+    title,
+    description = null,
+    startDate,
+    startTime = null,
+    endDate = null,
+    endTime = null,
+    allDay = false,
+    location = null,
+    category = "other",
+    memberIds = [],
+  } = req.body;
+
+  if (!title || !title.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: "Title is required",
+    });
+  }
+
+  if (!startDate) {
+    return res.status(400).json({
+      success: false,
+      error: "Start date is required",
+    });
+  }
+
+  const memberValidation =
+    validateMemberIds(memberIds);
+
+  if (!memberValidation.valid) {
+    return res.status(400).json({
+      success: false,
+      error: memberValidation.error,
+    });
+  }
+
+  /*
+   * Work out which numbered occurrence is being split.
+   *
+   * Example:
+   * 1 Sep  = occurrence 1
+   * 8 Sep  = occurrence 2
+   * 15 Sep = occurrence 3
+   * 22 Sep = occurrence 4
+   */
+  let cursor = originalStartDate;
+  let splitOccurrenceNumber = 1;
+  let splitMatchesSeries = false;
+
+  while (cursor <= splitDate) {
+    if (
+      formatDateOnly(cursor) === splitDateKey
+    ) {
+      splitMatchesSeries = true;
+      break;
+    }
+
+    const nextDate = getNextOccurrenceDate(
+      cursor,
+      seriesEvent.recurrence_rule
+    );
+
+    if (!nextDate || nextDate <= cursor) {
+      break;
+    }
+
+    cursor = nextDate;
+    splitOccurrenceNumber += 1;
+
+    if (splitOccurrenceNumber > 5000) {
+      break;
+    }
+  }
+
+  if (!splitMatchesSeries) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "The selected date is not part of this recurring series",
+    });
+  }
+
+  /*
+   * Calculate the original series end.
+   *
+   * The old series must stop immediately before
+   * the selected occurrence.
+   */
+  const previousOccurrenceDate =
+    splitOccurrenceNumber > 1
+      ? (() => {
+          let date = originalStartDate;
+
+          for (
+            let index = 1;
+            index < splitOccurrenceNumber - 1;
+            index += 1
+          ) {
+            date = getNextOccurrenceDate(
+              date,
+              seriesEvent.recurrence_rule
+            );
+          }
+
+          return date;
+        })()
+      : null;
+
+  if (!previousOccurrenceDate) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Unable to determine previous occurrence",
+    });
+  }
+
+  const previousDateKey = formatDateOnly(
+    previousOccurrenceDate
+  );
+
+  /*
+   * Preserve the original recurrence ending.
+   *
+   * If the original series used an occurrence count,
+   * the new series receives the number of occurrences
+   * remaining from the split point onward.
+   */
+  let oldSeriesCount = null;
+  let newSeriesCount = null;
+
+  if (
+    Number(seriesEvent.recurrence_count) > 0
+  ) {
+    const originalCount = Number(
+      seriesEvent.recurrence_count
+    );
+
+    oldSeriesCount =
+      splitOccurrenceNumber - 1;
+
+    newSeriesCount =
+      originalCount -
+      splitOccurrenceNumber +
+      1;
+
+    if (newSeriesCount < 1) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "The selected occurrence is outside the recurring series",
+      });
+    }
+  }
+
+  const splitSeries = db.transaction(() => {
+    /*
+     * End the original series.
+     */
+    if (oldSeriesCount) {
+      db.prepare(`
+        UPDATE events
+        SET
+          recurrence_count = ?,
+          recurrence_end_date = NULL,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        oldSeriesCount,
+        seriesEventId
+      );
+    } else {
+      db.prepare(`
+        UPDATE events
+        SET
+          recurrence_end_date = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        previousDateKey,
+        seriesEventId
+      );
+    }
+
+    /*
+     * Preserve the duration of the edited occurrence.
+     *
+     * startDate/endDate come from the edit form.
+     */
+    const result = db
+      .prepare(`
+        INSERT INTO events (
+          series_id,
+          title,
+          description,
+          start_date,
+          start_time,
+          end_date,
+          end_time,
+          all_day,
+          location,
+          category,
+          is_recurring,
+          recurrence_rule,
+          recurrence_end_date,
+          recurrence_count,
+          recurrence_parent_date
+        )
+        VALUES (
+          NULL,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          1, ?, ?, ?, ?
+        )
+      `)
+      .run(
+        title.trim(),
+        description,
+        startDate,
+        allDay ? null : startTime,
+        endDate || startDate,
+        allDay ? null : endTime,
+        allDay ? 1 : 0,
+        location,
+        category,
+        seriesEvent.recurrence_rule,
+
+        newSeriesCount
+          ? null
+          : seriesEvent.recurrence_end_date,
+
+        newSeriesCount,
+        splitDateKey
+      );
+
+    const newSeriesEventId = Number(
+      result.lastInsertRowid
+    );
+
+    const insertMember = db.prepare(`
+      INSERT INTO event_members (
+        event_id,
+        family_member_id
+      )
+      VALUES (?, ?)
+    `);
+
+    for (
+      const memberId of memberValidation.memberIds
+    ) {
+      insertMember.run(
+        newSeriesEventId,
+        memberId
+      );
+    }
+
+    /*
+     * The split-date occurrence is being replaced
+     * by the new recurring series itself.
+     *
+     * If that exact occurrence previously had an
+     * exception, remove it first.
+     */
+    const splitDateException = db
+      .prepare(`
+        SELECT replacement_event_id
+        FROM event_exceptions
+        WHERE event_id = ?
+          AND occurrence_date = ?
+      `)
+      .get(
+        seriesEventId,
+        splitDateKey
+      );
+
+    db.prepare(`
+      DELETE FROM event_exceptions
+      WHERE event_id = ?
+        AND occurrence_date = ?
+    `).run(
+      seriesEventId,
+      splitDateKey
+    );
+
+    if (
+      splitDateException?.replacement_event_id
+    ) {
+      db.prepare(`
+        DELETE FROM events
+        WHERE id = ?
+      `).run(
+        Number(
+          splitDateException.replacement_event_id
+        )
+      );
+    }
+
+    /*
+     * Move exceptions strictly AFTER the split date
+     * to the new continuation series.
+     */
+    db.prepare(`
+      UPDATE event_exceptions
+      SET event_id = ?
+      WHERE event_id = ?
+        AND occurrence_date > ?
+    `).run(
+      newSeriesEventId,
+      seriesEventId,
+      splitDateKey
+    );
+
+    /*
+     * Move replacement-event parent links strictly
+     * AFTER the split date as well.
+     */
+    db.prepare(`
+      UPDATE events
+      SET series_id = ?
+      WHERE series_id = ?
+        AND recurrence_parent_date > ?
+    `).run(
+      newSeriesEventId,
+      seriesEventId,
+      splitDateKey
+    );
+
+    return newSeriesEventId;
+  });
+
+  const newSeriesEventId = splitSeries();
+
+  res.json({
+    success: true,
+    originalSeries: getEventById(
+      seriesEventId
+    ),
+    newSeries: getEventById(
+      newSeriesEventId
+    ),
+    splitDate: splitDateKey,
+    status: "series-split",
+  });
+});
+
 router.put("/:id/occurrences/:date", (req, res) => {
   const seriesEventId = Number(req.params.id);
   const occurrenceDate = req.params.date;
