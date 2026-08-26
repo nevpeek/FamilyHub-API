@@ -135,6 +135,28 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_task_members_member
     ON task_members(family_member_id);
 
+    CREATE TABLE IF NOT EXISTS task_occurrences (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  occurrence_date TEXT NOT NULL,
+  is_completed INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  UNIQUE (task_id, occurrence_date),
+
+  FOREIGN KEY (task_id)
+    REFERENCES tasks(id)
+    ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_occurrences_task
+  ON task_occurrences(task_id);
+
+CREATE INDEX IF NOT EXISTS idx_task_occurrences_date
+  ON task_occurrences(occurrence_date);
+
 
   CREATE TABLE IF NOT EXISTS meals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,5 +264,73 @@ addColumnIfMissing("events", "recurrence_rule", "TEXT");
 addColumnIfMissing("events", "recurrence_end_date", "TEXT");
 addColumnIfMissing("events", "recurrence_count", "INTEGER");
 addColumnIfMissing("events", "recurrence_parent_date", "TEXT");
+
+/* ========================================
+   Recurring Tasks
+======================================== */
+
+addColumnIfMissing(
+  "tasks",
+  "is_recurring",
+  "INTEGER NOT NULL DEFAULT 0"
+);
+
+addColumnIfMissing(
+  "tasks",
+  "recurrence_rule",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "tasks",
+  "recurrence_end_date",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "tasks",
+  "recurrence_count",
+  "INTEGER"
+);
+
+/* ========================================
+   Task Occurrence Overrides
+======================================== */
+
+addColumnIfMissing(
+  "task_occurrences",
+  "title",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "task_occurrences",
+  "description",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "task_occurrences",
+  "due_time",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "task_occurrences",
+  "priority",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "task_occurrences",
+  "category",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "task_occurrences",
+  "is_deleted",
+  "INTEGER NOT NULL DEFAULT 0"
+);
 
 module.exports = db;
