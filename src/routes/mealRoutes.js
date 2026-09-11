@@ -6,15 +6,20 @@ const router = express.Router();
 function getMealById(id) {
   const meal = db
     .prepare(`
-      SELECT
+            SELECT
         id,
-        title,
-        meal_date,
-        meal_type,
-        description,
-        recipe_url,
-        created_at,
-        updated_at
+title,
+meal_date,
+meal_type,
+meal_time,
+description,
+recipe_url,
+ingredients,
+recipe_id,
+reminder_enabled,
+reminder_minutes,
+created_at,
+updated_at
       FROM meals
       WHERE id = ?
     `)
@@ -26,12 +31,13 @@ function getMealById(id) {
 
   const members = db
     .prepare(`
-      SELECT
-        fm.id,
-        fm.name,
-        fm.colour,
-        fm.initials
-      FROM meal_members mm
+SELECT
+  fm.id,
+  fm.name,
+  fm.colour,
+  fm.initials,
+  fm.photo_url
+FROM meal_members mm
       JOIN family_members fm
         ON fm.id = mm.family_member_id
       WHERE mm.meal_id = ?
@@ -180,14 +186,19 @@ router.get("/:id", (req, res) => {
 });
 
 router.post("/", (req, res) => {
-  const {
-    title,
-    mealDate,
-    mealType = "dinner",
-    description = null,
-    recipeUrl = null,
-    memberIds = [],
-  } = req.body;
+const {
+  title,
+  mealDate,
+  mealType = "dinner",
+  mealTime = null,
+  description = null,
+  recipeUrl = null,
+  ingredients = null,
+  recipeId = null,
+  reminderEnabled = false,
+  reminderMinutes = null,
+  memberIds = [],
+} = req.body;
 
   if (!title || !title.trim()) {
     return res.status(400).json({
@@ -195,6 +206,27 @@ router.post("/", (req, res) => {
       error: "Title is required",
     });
   }
+
+  const existingSlotMeal = db
+  .prepare(`
+    SELECT id, title
+    FROM meals
+    WHERE meal_date = ?
+      AND meal_type = ?
+    LIMIT 1
+  `)
+  .get(mealDate, mealType);
+
+if (existingSlotMeal) {
+  return res.status(409).json({
+    success: false,
+    error: `${mealType
+      .charAt(0)
+      .toUpperCase()}${mealType.slice(
+      1
+    )} already has ${existingSlotMeal.title}`,
+  });
+}
 
   if (!mealDate) {
     return res.status(400).json({
@@ -217,6 +249,27 @@ router.post("/", (req, res) => {
     });
   }
 
+    if (reminderEnabled && !mealTime) {
+    return res.status(400).json({
+      success: false,
+      error: "Meal time is required for reminders",
+    });
+  }
+
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid reminder time",
+    });
+  }
+
   const memberValidation =
     validateMemberIds(memberIds);
 
@@ -230,22 +283,32 @@ router.post("/", (req, res) => {
   const createMeal = db.transaction(() => {
     const result = db
       .prepare(`
-        INSERT INTO meals (
-          title,
-          meal_date,
-          meal_type,
-          description,
-          recipe_url
-        )
-        VALUES (?, ?, ?, ?, ?)
+INSERT INTO meals (
+  title,
+  meal_date,
+  meal_type,
+  meal_time,
+  description,
+  recipe_url,
+  ingredients,
+  recipe_id,
+  reminder_enabled,
+  reminder_minutes
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(
-        title.trim(),
-        mealDate,
-        mealType,
-        description,
-        recipeUrl
-      );
+.run(
+  title.trim(),
+  mealDate,
+  mealType,
+  mealTime,
+  description,
+  recipeUrl,
+  ingredients,
+  recipeId,
+  reminderEnabled ? 1 : 0,
+  reminderMinutes
+);
 
     const mealId = Number(result.lastInsertRowid);
 
@@ -284,14 +347,19 @@ router.put("/:id", (req, res) => {
     });
   }
 
-  const {
-    title,
-    mealDate,
-    mealType = "dinner",
-    description = null,
-    recipeUrl = null,
-    memberIds = [],
-  } = req.body;
+const {
+  title,
+  mealDate,
+  mealType = "dinner",
+  mealTime = null,
+  description = null,
+  recipeUrl = null,
+  ingredients = null,
+  recipeId = null,
+  reminderEnabled = false,
+  reminderMinutes = null,
+  memberIds = [],
+} = req.body;
 
   if (!title || !title.trim()) {
     return res.status(400).json({
@@ -314,6 +382,27 @@ router.put("/:id", (req, res) => {
     "snack",
   ];
 
+    if (reminderEnabled && !mealTime) {
+    return res.status(400).json({
+      success: false,
+      error: "Meal time is required for reminders",
+    });
+  }
+
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid reminder time",
+    });
+  }
+
   if (!validMealTypes.includes(mealType)) {
     return res.status(400).json({
       success: false,
@@ -333,23 +422,33 @@ router.put("/:id", (req, res) => {
 
   const updateMeal = db.transaction(() => {
     db.prepare(`
-      UPDATE meals
-      SET
-        title = ?,
-        meal_date = ?,
-        meal_type = ?,
-        description = ?,
-        recipe_url = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(
-      title.trim(),
-      mealDate,
-      mealType,
-      description,
-      recipeUrl,
-      mealId
-    );
+UPDATE meals
+SET
+  title = ?,
+  meal_date = ?,
+  meal_type = ?,
+  meal_time = ?,
+  description = ?,
+  recipe_url = ?,
+  ingredients = ?,
+  recipe_id = ?,
+  reminder_enabled = ?,
+  reminder_minutes = ?,
+  updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+       `).run(
+  title.trim(),
+  mealDate,
+  mealType,
+  mealTime,
+  description,
+  recipeUrl,
+  ingredients,
+  recipeId,
+  reminderEnabled ? 1 : 0,
+  reminderMinutes,
+  mealId
+);
 
     db.prepare(`
       DELETE FROM meal_members

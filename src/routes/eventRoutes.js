@@ -125,7 +125,21 @@ function getEventById(id) {
         end_time,
         all_day,
         location,
+        address,
+        notes,
+        url,
         category,
+        source,
+        external_calendar_id,
+        external_event_id,
+        sync_status,
+        weather_lat,
+        weather_lon,
+        prep_time,
+        travel_time,
+        colour_override,
+        reminder_enabled,
+        reminder_minutes,
         is_recurring,
         recurrence_rule,
         recurrence_end_date,
@@ -160,6 +174,11 @@ function getEventById(id) {
   return {
     ...event,
     all_day: Boolean(event.all_day),
+    reminder_enabled: Boolean(event.reminder_enabled),
+    reminder_minutes:
+      event.reminder_minutes !== null
+        ? Number(event.reminder_minutes)
+        : null,
     is_recurring: Boolean(event.is_recurring),
     members,
   };
@@ -504,7 +523,21 @@ router.post("/", (req, res) => {
     endTime = null,
     allDay = false,
     location = null,
+    address = null,
+    notes = null,
+    url = null,
     category = "other",
+    source = "familyhub",
+    externalCalendarId = null,
+    externalEventId = null,
+    syncStatus = null,
+    weatherLat = null,
+    weatherLon = null,
+    prepTime = null,
+    travelTime = null,
+    colourOverride = null,
+    reminderEnabled = false,
+    reminderMinutes = null,
     memberIds = [],
   } = req.body;
 
@@ -532,6 +565,21 @@ router.post("/", (req, res) => {
     });
   }
 
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Reminder minutes must be a valid non-negative number.",
+    });
+  }
+
   const {
     isRecurring,
     recurrenceRule,
@@ -551,13 +599,31 @@ router.post("/", (req, res) => {
           end_time,
           all_day,
           location,
+          address,
+          notes,
+          url,
           category,
+          source,
+          external_calendar_id,
+          external_event_id,
+          sync_status,
+          weather_lat,
+          weather_lon,
+          prep_time,
+          travel_time,
+          colour_override,
+          reminder_enabled,
+          reminder_minutes,
           is_recurring,
           recurrence_rule,
           recurrence_end_date,
           recurrence_count
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?
+        )
       `)
       .run(
         title.trim(),
@@ -568,7 +634,23 @@ router.post("/", (req, res) => {
         allDay ? null : endTime,
         allDay ? 1 : 0,
         location,
+        address,
+        notes,
+        url,
         category,
+        source,
+        externalCalendarId,
+        externalEventId,
+        syncStatus,
+        weatherLat,
+        weatherLon,
+        prepTime,
+        travelTime,
+        colourOverride,
+        reminderEnabled ? 1 : 0,
+        reminderEnabled && reminderMinutes !== null
+          ? Number(reminderMinutes)
+          : null,
         isRecurring ? 1 : 0,
         recurrenceRule,
         recurrenceEndDate,
@@ -623,7 +705,21 @@ router.put("/:id", (req, res) => {
     endTime = null,
     allDay = false,
     location = null,
+    address = null,
+    notes = null,
+    url = null,
     category = "other",
+    source = "familyhub",
+    externalCalendarId = null,
+    externalEventId = null,
+    syncStatus = null,
+    weatherLat = null,
+    weatherLon = null,
+    prepTime = null,
+    travelTime = null,
+    colourOverride = null,
+    reminderEnabled = false,
+    reminderMinutes = null,
     memberIds = [],
   } = req.body;
 
@@ -651,6 +747,21 @@ router.put("/:id", (req, res) => {
     });
   }
 
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Reminder minutes must be a valid non-negative number.",
+    });
+  }
+
   const {
     isRecurring,
     recurrenceRule,
@@ -670,7 +781,21 @@ router.put("/:id", (req, res) => {
         end_time = ?,
         all_day = ?,
         location = ?,
+        address = ?,
+        notes = ?,
+        url = ?,
         category = ?,
+        source = ?,
+        external_calendar_id = ?,
+        external_event_id = ?,
+        sync_status = ?,
+        weather_lat = ?,
+        weather_lon = ?,
+        prep_time = ?,
+        travel_time = ?,
+        colour_override = ?,
+        reminder_enabled = ?,
+        reminder_minutes = ?,
         is_recurring = ?,
         recurrence_rule = ?,
         recurrence_end_date = ?,
@@ -686,14 +811,29 @@ router.put("/:id", (req, res) => {
       allDay ? null : endTime,
       allDay ? 1 : 0,
       location,
+      address,
+      notes,
+      url,
       category,
+      source,
+      externalCalendarId,
+      externalEventId,
+      syncStatus,
+      weatherLat,
+      weatherLon,
+      prepTime,
+      travelTime,
+      colourOverride,
+      reminderEnabled ? 1 : 0,
+      reminderEnabled && reminderMinutes !== null
+        ? Number(reminderMinutes)
+        : null,
       isRecurring ? 1 : 0,
       recurrenceRule,
       recurrenceEndDate,
       recurrenceCount,
       eventId
     );
-
     db.prepare(`
       DELETE FROM event_members
       WHERE event_id = ?
@@ -772,7 +912,21 @@ router.put("/:id/occurrences/:date/future", (req, res) => {
     endTime = null,
     allDay = false,
     location = null,
+    address = null,
+    notes = null,
+    url = null,
     category = "other",
+    source = "familyhub",
+    externalCalendarId = null,
+    externalEventId = null,
+    syncStatus = null,
+    weatherLat = null,
+    weatherLon = null,
+    prepTime = null,
+    travelTime = null,
+    colourOverride = null,
+    reminderEnabled = false,
+    reminderMinutes = null,
     memberIds = [],
   } = req.body;
 
@@ -797,6 +951,21 @@ router.put("/:id/occurrences/:date/future", (req, res) => {
     return res.status(400).json({
       success: false,
       error: memberValidation.error,
+    });
+  }
+
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Reminder minutes must be a valid non-negative number.",
     });
   }
 
@@ -964,7 +1133,21 @@ router.put("/:id/occurrences/:date/future", (req, res) => {
           end_time,
           all_day,
           location,
+          address,
+          notes,
+          url,
           category,
+          source,
+          external_calendar_id,
+          external_event_id,
+          sync_status,
+          weather_lat,
+          weather_lon,
+          prep_time,
+          travel_time,
+          colour_override,
+          reminder_enabled,
+          reminder_minutes,
           is_recurring,
           recurrence_rule,
           recurrence_end_date,
@@ -973,7 +1156,8 @@ router.put("/:id/occurrences/:date/future", (req, res) => {
         )
         VALUES (
           NULL,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           1, ?, ?, ?, ?
         )
       `)
@@ -986,7 +1170,23 @@ router.put("/:id/occurrences/:date/future", (req, res) => {
         allDay ? null : endTime,
         allDay ? 1 : 0,
         location,
+        address,
+        notes,
+        url,
         category,
+        source,
+        externalCalendarId,
+        externalEventId,
+        syncStatus,
+        weatherLat,
+        weatherLon,
+        prepTime,
+        travelTime,
+        colourOverride,
+        reminderEnabled ? 1 : 0,
+        reminderEnabled && reminderMinutes !== null
+          ? Number(reminderMinutes)
+          : null,
         seriesEvent.recurrence_rule,
 
         newSeriesCount
@@ -1146,7 +1346,21 @@ router.put("/:id/occurrences/:date", (req, res) => {
     endTime = null,
     allDay = false,
     location = null,
+    address = null,
+    notes = null,
+    url = null,
     category = "other",
+    source = "familyhub",
+    externalCalendarId = null,
+    externalEventId = null,
+    syncStatus = null,
+    weatherLat = null,
+    weatherLon = null,
+    prepTime = null,
+    travelTime = null,
+    colourOverride = null,
+    reminderEnabled = false,
+    reminderMinutes = null,
     memberIds = [],
   } = req.body;
 
@@ -1171,6 +1385,21 @@ router.put("/:id/occurrences/:date", (req, res) => {
     return res.status(400).json({
       success: false,
       error: memberValidation.error,
+    });
+  }
+
+  if (
+    reminderEnabled &&
+    (
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Reminder minutes must be a valid non-negative number.",
     });
   }
 
@@ -1206,7 +1435,21 @@ router.put("/:id/occurrences/:date", (req, res) => {
           end_time = ?,
           all_day = ?,
           location = ?,
+          address = ?,
+          notes = ?,
+          url = ?,
           category = ?,
+          source = ?,
+          external_calendar_id = ?,
+          external_event_id = ?,
+          sync_status = ?,
+          weather_lat = ?,
+          weather_lon = ?,
+          prep_time = ?,
+          travel_time = ?,
+          colour_override = ?,
+          reminder_enabled = ?,
+          reminder_minutes = ?,
           series_id = ?,
           is_recurring = 0,
           recurrence_rule = NULL,
@@ -1224,7 +1467,23 @@ router.put("/:id/occurrences/:date", (req, res) => {
         allDay ? null : endTime,
         allDay ? 1 : 0,
         location,
+        address,
+        notes,
+        url,
         category,
+        source,
+        externalCalendarId,
+        externalEventId,
+        syncStatus,
+        weatherLat,
+        weatherLon,
+        prepTime,
+        travelTime,
+        colourOverride,
+        reminderEnabled ? 1 : 0,
+        reminderEnabled && reminderMinutes !== null
+          ? Number(reminderMinutes)
+          : null,
         seriesEventId,
         occurrenceDate,
         replacementEventId
@@ -1247,7 +1506,21 @@ router.put("/:id/occurrences/:date", (req, res) => {
             end_time,
             all_day,
             location,
+            address,
+            notes,
+            url,
             category,
+            source,
+            external_calendar_id,
+            external_event_id,
+            sync_status,
+            weather_lat,
+            weather_lon,
+            prep_time,
+            travel_time,
+            colour_override,
+            reminder_enabled,
+            reminder_minutes,
             is_recurring,
             recurrence_rule,
             recurrence_end_date,
@@ -1255,7 +1528,8 @@ router.put("/:id/occurrences/:date", (req, res) => {
             recurrence_parent_date
           )
           VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             0, NULL, NULL, NULL, ?
           )
         `)
@@ -1269,7 +1543,23 @@ router.put("/:id/occurrences/:date", (req, res) => {
           allDay ? null : endTime,
           allDay ? 1 : 0,
           location,
+          address,
+          notes,
+          url,
           category,
+          source,
+          externalCalendarId,
+          externalEventId,
+          syncStatus,
+          weatherLat,
+          weatherLon,
+          prepTime,
+          travelTime,
+          colourOverride,
+          reminderEnabled ? 1 : 0,
+          reminderEnabled && reminderMinutes !== null
+            ? Number(reminderMinutes)
+            : null,
           occurrenceDate
         );
 

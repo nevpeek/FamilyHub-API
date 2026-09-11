@@ -1,16 +1,54 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
+
 const db = require("../database/db");
 
 const router = express.Router();
 
+const memberUploadDir = path.join(
+  __dirname,
+  "../../uploads/members"
+);
+
+fs.mkdirSync(memberUploadDir, {
+  recursive: true,
+});
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, memberUploadDir);
+  },
+
+  filename: (req, file, cb) => {
+    const extension =
+      path.extname(file.originalname) || ".jpg";
+
+    cb(
+      null,
+      `member-${Date.now()}${extension}`
+    );
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+});
+
 router.get("/", (req, res) => {
   const members = db
     .prepare(`
-      SELECT
+SELECT
   id,
   name,
   colour,
   initials,
+  photo_url,
+  birthday,
   role,
   is_active,
   display_order,
@@ -29,13 +67,14 @@ ORDER BY display_order ASC, name ASC
 });
 
 router.post("/", (req, res) => {
-  const {
-    name,
-    colour = "#3B82F6",
-    initials = null,
-    role = "member",
-    displayOrder = 0,
-  } = req.body;
+const {
+  name,
+  colour = "#3B82F6",
+  initials = null,
+  birthday = null,
+  role = "member",
+  displayOrder = 0,
+} = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({
@@ -46,22 +85,24 @@ router.post("/", (req, res) => {
 
   const result = db
     .prepare(`
-      INSERT INTO family_members (
-        name,
-        colour,
-        initials,
-        role,
-        display_order
-      )
-      VALUES (?, ?, ?, ?, ?)
+INSERT INTO family_members (
+  name,
+  colour,
+  initials,
+  birthday,
+  role,
+  display_order
+)
+VALUES (?, ?, ?, ?, ?, ?)
     `)
-    .run(
-      name.trim(),
-      colour,
-      initials,
-      role,
-      Number(displayOrder) || 0
-    );
+.run(
+  name.trim(),
+  colour,
+  initials,
+  birthday || null,
+  role,
+  Number(displayOrder) || 0
+);
 
   const member = db
     .prepare(`
@@ -102,14 +143,15 @@ router.patch("/:id", (req, res) => {
     });
   }
 
-  const {
-    name,
-    colour,
-    initials,
-    role,
-    isActive,
-    displayOrder,
-  } = req.body;
+const {
+  name,
+  colour,
+  initials,
+  birthday,
+  role,
+  isActive,
+  displayOrder,
+} = req.body;
 
   const nextName =
     name !== undefined
@@ -128,12 +170,17 @@ router.patch("/:id", (req, res) => {
       ? colour
       : existingMember.colour;
 
-  const nextInitials =
-    initials !== undefined
-      ? initials
-      : existingMember.initials;
+const nextInitials =
+  initials !== undefined
+    ? initials
+    : existingMember.initials;
 
-  const nextRole =
+const nextBirthday =
+  birthday !== undefined
+    ? birthday || null
+    : existingMember.birthday;
+
+const nextRole =
     role !== undefined
       ? role
       : existingMember.role;
@@ -152,24 +199,26 @@ router.patch("/:id", (req, res) => {
 
   db.prepare(`
     UPDATE family_members
-    SET
-      name = ?,
-      colour = ?,
-      initials = ?,
-      role = ?,
-      is_active = ?,
-      display_order = ?,
-      updated_at = CURRENT_TIMESTAMP
+SET
+  name = ?,
+  colour = ?,
+  initials = ?,
+  birthday = ?,
+  role = ?,
+  is_active = ?,
+  display_order = ?,
+  updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
-    nextName,
-    nextColour,
-    nextInitials,
-    nextRole,
-    nextIsActive,
-    nextDisplayOrder,
-    memberId
-  );
+  nextName,
+  nextColour,
+  nextInitials,
+  nextBirthday,
+  nextRole,
+  nextIsActive,
+  nextDisplayOrder,
+  memberId
+);
 
   const member = db
     .prepare(`
@@ -223,5 +272,95 @@ router.delete("/:id", (req, res) => {
     memberId,
   });
 });
+
+router.post(
+  "/:id/photo",
+  upload.single("photo"),
+  (req, res) => {
+    try {
+      const memberId = Number(req.params.id);
+
+      if (!Number.isInteger(memberId)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid family member id",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: "No photo uploaded",
+        });
+      }
+
+      const photoUrl =
+        `/uploads/members/${req.file.filename}`;
+
+      const existing = db
+        .prepare(`
+          SELECT *
+          FROM family_members
+          WHERE id = ?
+        `)
+        .get(memberId);
+
+      if (!existing) {
+        return res.status(404).json({
+          success: false,
+          error: "Family member not found",
+        });
+      }
+
+      if (
+        existing.photo_url &&
+        existing.photo_url.startsWith(
+          "/uploads/members/"
+        )
+      ) {
+        const oldPhotoPath = path.join(
+          __dirname,
+          "../..",
+          existing.photo_url
+        );
+
+        if (fs.existsSync(oldPhotoPath)) {
+          fs.unlinkSync(oldPhotoPath);
+        }
+      }
+
+      db.prepare(`
+        UPDATE family_members
+        SET
+          photo_url = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        photoUrl,
+        memberId
+      );
+
+      const member = db
+        .prepare(`
+          SELECT *
+          FROM family_members
+          WHERE id = ?
+        `)
+        .get(memberId);
+
+      res.json({
+        success: true,
+        member,
+      });
+    } catch (err) {
+      console.error(err);
+
+      res.status(500).json({
+        success: false,
+        error: "Unable to upload family photo",
+      });
+    }
+  }
+);
 
 module.exports = router;

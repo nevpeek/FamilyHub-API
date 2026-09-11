@@ -79,6 +79,8 @@ function getOccurrenceState(
         due_time,
         priority,
         category,
+        reminder_enabled,
+        reminder_minutes,
         is_deleted
       FROM task_occurrences
       WHERE task_id = ?
@@ -98,6 +100,8 @@ function getOccurrenceState(
       due_time: null,
       priority: null,
       category: null,
+      reminder_enabled: null,
+      reminder_minutes: null,
       is_deleted: false,
     };
   }
@@ -124,6 +128,16 @@ function getOccurrenceState(
     category:
       row.category ?? null,
 
+    reminder_enabled:
+      row.reminder_enabled !== null
+        ? Boolean(row.reminder_enabled)
+        : null,
+
+    reminder_minutes:
+      row.reminder_minutes !== null
+        ? Number(row.reminder_minutes)
+        : null,
+
     is_deleted:
       Boolean(row.is_deleted),
   };
@@ -147,15 +161,24 @@ function expandRecurringTask(
   let occurrenceDate =
     parseDateKey(task.due_date);
 
-  const rangeStart =
-    startDate
-      ? parseDateKey(startDate)
-      : null;
+const today = new Date();
 
-  const rangeEnd =
-    endDate
-      ? parseDateKey(endDate)
-      : null;
+today.setHours(
+  12,
+  0,
+  0,
+  0
+);
+
+const rangeStart =
+  startDate
+    ? parseDateKey(startDate)
+    : today;
+
+const rangeEnd =
+  endDate
+    ? parseDateKey(endDate)
+    : today;
 
   const recurrenceEnd =
     task.recurrence_end_date
@@ -244,13 +267,31 @@ if (inRange) {
         occurrenceState.category ??
         task.category,
 
+      reminder_enabled:
+        occurrenceState.reminder_enabled === null
+          ? task.reminder_enabled
+          : occurrenceState.reminder_enabled,
+
+      reminder_minutes:
+        occurrenceState.reminder_enabled === null
+          ? task.reminder_minutes
+          : occurrenceState.reminder_enabled
+            ? occurrenceState.reminder_minutes
+            : null,
+
       is_completed:
         occurrenceState.is_completed,
 
-      completed_at:
-        occurrenceState.completed_at,
+completed_at:
+  occurrenceState.completed_at,
 
-      is_occurrence: true,
+members:
+  getMemberCompletionStates(
+    task.id,
+    occurrenceKey
+  ),
+
+is_occurrence: true,
 
       occurrence_date:
         occurrenceKey,
@@ -271,6 +312,54 @@ if (inRange) {
   return occurrences;
 }
 
+function getMemberCompletionStates(
+  taskId,
+  occurrenceDate = ""
+) {
+  const members = db
+    .prepare(`
+      SELECT
+        fm.id,
+        fm.name,
+        fm.colour,
+        fm.initials,
+        fm.photo_url,
+        COALESCE(
+          tmc.is_completed,
+          0
+        ) AS is_completed,
+        tmc.completed_at
+      FROM task_members tm
+
+      JOIN family_members fm
+        ON fm.id = tm.family_member_id
+
+      LEFT JOIN task_member_completions tmc
+        ON tmc.task_id = tm.task_id
+        AND tmc.family_member_id =
+          tm.family_member_id
+        AND tmc.occurrence_date = ?
+
+      WHERE tm.task_id = ?
+
+      ORDER BY
+        fm.display_order ASC,
+        fm.name ASC
+    `)
+    .all(
+      occurrenceDate || "",
+      taskId
+    );
+
+  return members.map((member) => ({
+    ...member,
+    is_completed:
+      Boolean(member.is_completed),
+    completed_at:
+      member.completed_at || null,
+  }));
+}
+
 function getTaskById(id) {
   const task = db
     .prepare(`
@@ -284,6 +373,8 @@ SELECT
   category,
   is_completed,
   completed_at,
+  reminder_enabled,
+  reminder_minutes,
   is_recurring,
   recurrence_rule,
   recurrence_end_date,
@@ -298,6 +389,14 @@ WHERE id = ?
   if (!task) {
     return null;
   }
+
+  const reward = db
+    .prepare(`
+      SELECT star_value
+      FROM task_rewards
+      WHERE task_id = ?
+    `)
+    .get(id);
 
   const members = db
     .prepare(`
@@ -314,10 +413,17 @@ WHERE id = ?
     `)
     .all(id);
 
-  return {
+return {
   ...task,
   is_completed: Boolean(task.is_completed),
+  reminder_enabled: Boolean(task.reminder_enabled),
+  reminder_minutes:
+    task.reminder_minutes !== null
+      ? Number(task.reminder_minutes)
+      : null,
   is_recurring: Boolean(task.is_recurring),
+  star_value:
+    Number(reward?.star_value) || 1,
   members,
 };
 }
@@ -366,6 +472,731 @@ function validateMemberIds(memberIds) {
     memberIds: uniqueMemberIds,
   };
 }
+
+router.get("/rewards", (req, res) => {
+  const rewards = db
+    .prepare(`
+      SELECT
+        id,
+        title,
+        description,
+        star_cost,
+        is_active,
+        created_at,
+        updated_at
+      FROM rewards
+      WHERE is_active = 1
+      ORDER BY
+        star_cost ASC,
+        title ASC
+    `)
+    .all();
+
+  res.json({
+    success: true,
+    rewards: rewards.map((reward) => ({
+      ...reward,
+      star_cost:
+        Number(reward.star_cost) || 0,
+      is_active:
+        Boolean(reward.is_active),
+    })),
+  });
+});
+
+router.post("/rewards", (req, res) => {
+  const {
+    title,
+    description = null,
+    starCost = 10,
+  } = req.body;
+
+  if (!title || !title.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: "Reward title is required",
+    });
+  }
+
+  const result = db
+    .prepare(`
+      INSERT INTO rewards (
+        title,
+        description,
+        star_cost
+      )
+      VALUES (?, ?, ?)
+    `)
+    .run(
+      title.trim(),
+      description?.trim() || null,
+      Math.max(
+        0,
+        Number(starCost) || 0
+      )
+    );
+
+  const reward = db
+    .prepare(`
+      SELECT
+        id,
+        title,
+        description,
+        star_cost,
+        is_active,
+        created_at,
+        updated_at
+      FROM rewards
+      WHERE id = ?
+    `)
+    .get(
+      Number(result.lastInsertRowid)
+    );
+
+  res.status(201).json({
+    success: true,
+    reward: {
+      ...reward,
+      star_cost:
+        Number(reward.star_cost) || 0,
+      is_active:
+        Boolean(reward.is_active),
+    },
+  });
+});
+
+router.put("/rewards/:id", (req, res) => {
+  const rewardId =
+    Number(req.params.id);
+
+  const existingReward = db
+    .prepare(`
+      SELECT id
+      FROM rewards
+      WHERE id = ?
+    `)
+    .get(rewardId);
+
+  if (!existingReward) {
+    return res.status(404).json({
+      success: false,
+      error: "Reward not found",
+    });
+  }
+
+  const {
+    title,
+    description = null,
+    starCost = 10,
+  } = req.body;
+
+  if (!title || !title.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: "Reward title is required",
+    });
+  }
+
+  db.prepare(`
+    UPDATE rewards
+    SET
+      title = ?,
+      description = ?,
+      star_cost = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    title.trim(),
+    description?.trim() || null,
+    Math.max(
+      0,
+      Number(starCost) || 0
+    ),
+    rewardId
+  );
+
+  const reward = db
+    .prepare(`
+      SELECT
+        id,
+        title,
+        description,
+        star_cost,
+        is_active,
+        created_at,
+        updated_at
+      FROM rewards
+      WHERE id = ?
+    `)
+    .get(rewardId);
+
+  res.json({
+    success: true,
+    reward: {
+      ...reward,
+      star_cost:
+        Number(reward.star_cost) || 0,
+      is_active:
+        Boolean(reward.is_active),
+    },
+  });
+});
+
+router.delete(
+  "/rewards/:id",
+  (req, res) => {
+    const rewardId =
+      Number(req.params.id);
+
+    const existingReward = db
+      .prepare(`
+        SELECT id
+        FROM rewards
+        WHERE id = ?
+      `)
+      .get(rewardId);
+
+    if (!existingReward) {
+      return res.status(404).json({
+        success: false,
+        error: "Reward not found",
+      });
+    }
+
+    db.prepare(`
+      UPDATE rewards
+      SET
+        is_active = 0,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(rewardId);
+
+    res.json({
+      success: true,
+    });
+  }
+);
+
+router.post(
+  "/rewards/:id/redeem",
+  (req, res) => {
+    const rewardId =
+      Number(req.params.id);
+
+    const {
+      familyMemberId,
+    } = req.body;
+
+    if (!familyMemberId) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Family member is required",
+      });
+    }
+
+    const reward = db
+      .prepare(`
+        SELECT
+          id,
+          title,
+          description,
+          star_cost,
+          is_active
+        FROM rewards
+        WHERE id = ?
+          AND is_active = 1
+      `)
+      .get(rewardId);
+
+    if (!reward) {
+      return res.status(404).json({
+        success: false,
+        error: "Reward not found",
+      });
+    }
+
+    const member = db
+      .prepare(`
+        SELECT
+          id,
+          name
+        FROM family_members
+        WHERE id = ?
+          AND is_active = 1
+      `)
+      .get(
+        Number(familyMemberId)
+      );
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        error:
+          "Family member not found",
+      });
+    }
+
+    const balanceRow = db
+      .prepare(`
+        SELECT
+          COALESCE(
+            SUM(stars),
+            0
+          ) AS stars
+        FROM family_star_transactions
+        WHERE family_member_id = ?
+      `)
+      .get(member.id);
+
+    const currentBalance =
+      Number(balanceRow?.stars) || 0;
+
+    const starCost =
+      Math.max(
+        0,
+        Number(reward.star_cost) || 0
+      );
+
+    if (currentBalance < starCost) {
+      return res.status(400).json({
+        success: false,
+        error:
+          `${member.name} needs ${
+            starCost - currentBalance
+          } more stars`,
+        balance: currentBalance,
+        required: starCost,
+      });
+    }
+
+    const redeemReward =
+      db.transaction(() => {
+        db.prepare(`
+          INSERT INTO
+            family_star_transactions (
+              family_member_id,
+              task_id,
+              occurrence_date,
+              stars,
+              transaction_type,
+              description
+            )
+          VALUES (
+            ?, NULL, '', ?,
+            'redemption', ?
+          )
+        `).run(
+          member.id,
+          -starCost,
+          `Redeemed: ${reward.title}`
+        );
+
+        const updatedBalance =
+          db.prepare(`
+            SELECT
+              COALESCE(
+                SUM(stars),
+                0
+              ) AS stars
+            FROM family_star_transactions
+            WHERE family_member_id = ?
+          `)
+          .get(member.id);
+
+        return (
+          Number(
+            updatedBalance?.stars
+          ) || 0
+        );
+      });
+
+    const newBalance =
+      redeemReward();
+
+    res.json({
+      success: true,
+
+      redemption: {
+        rewardId: reward.id,
+        rewardTitle: reward.title,
+        familyMemberId: member.id,
+        familyMemberName:
+          member.name,
+        starsSpent: starCost,
+        remainingStars:
+          newBalance,
+      },
+    });
+  }
+);
+
+router.get(
+  "/rewards/history",
+  (req, res) => {
+    try {
+      const history = db
+        .prepare(`
+          SELECT
+            fst.id,
+            fst.family_member_id,
+            fst.stars,
+            fst.description,
+            fst.created_at,
+
+            fm.name AS member_name,
+            fm.colour AS member_colour,
+            fm.initials AS member_initials,
+            fm.photo_url AS member_photo_url
+
+          FROM family_star_transactions fst
+
+          JOIN family_members fm
+            ON fm.id =
+              fst.family_member_id
+
+          WHERE
+            fst.transaction_type =
+              'redemption'
+
+          ORDER BY
+            fst.created_at DESC,
+            fst.id DESC
+
+          LIMIT 50
+        `)
+        .all();
+
+      res.json({
+        success: true,
+
+        history:
+          history.map((item) => ({
+            id: item.id,
+
+            familyMemberId:
+              item.family_member_id,
+
+            memberName:
+              item.member_name,
+
+            memberColour:
+              item.member_colour,
+
+            memberInitials:
+              item.member_initials,
+
+            memberPhotoUrl:
+              item.member_photo_url,
+
+            starsSpent:
+              Math.abs(
+                Number(item.stars) || 0
+              ),
+
+            description:
+              item.description,
+
+            createdAt:
+              item.created_at,
+          })),
+      });
+    } catch (error) {
+      console.error(
+        "Reward history error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Unable to load reward history",
+      });
+    }
+  }
+);
+
+router.get(
+  "/rewards/goals",
+  (req, res) => {
+    try {
+      const members = db
+        .prepare(`
+          SELECT
+            fm.id,
+            fm.name,
+            fm.colour,
+            fm.initials,
+            fm.photo_url,
+
+            COALESCE(
+              SUM(fst.stars),
+              0
+            ) AS stars,
+
+            frg.reward_id,
+
+            r.title AS reward_title,
+            r.description AS reward_description,
+            r.star_cost AS reward_star_cost
+
+          FROM family_members fm
+
+          LEFT JOIN family_star_transactions fst
+            ON fst.family_member_id = fm.id
+
+          LEFT JOIN family_reward_goals frg
+            ON frg.family_member_id = fm.id
+
+          LEFT JOIN rewards r
+            ON r.id = frg.reward_id
+            AND r.is_active = 1
+
+          WHERE fm.is_active = 1
+
+          GROUP BY
+            fm.id,
+            fm.name,
+            fm.colour,
+            fm.initials,
+            fm.photo_url,
+            frg.reward_id,
+            r.title,
+            r.description,
+            r.star_cost
+
+          ORDER BY
+            fm.display_order ASC,
+            fm.name ASC
+        `)
+        .all();
+
+      res.json({
+        success: true,
+
+        goals: members.map((member) => {
+          const stars =
+            Number(member.stars) || 0;
+
+          const starCost =
+            member.reward_star_cost !== null
+              ? Number(
+                  member.reward_star_cost
+                )
+              : null;
+
+          const progress =
+            starCost &&
+            starCost > 0
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (stars /
+                      starCost) *
+                      100
+                  )
+                )
+              : 0;
+
+          return {
+            familyMemberId:
+              member.id,
+
+            memberName:
+              member.name,
+
+            memberColour:
+              member.colour,
+
+            memberInitials:
+              member.initials,
+
+            memberPhotoUrl:
+              member.photo_url,
+
+            stars,
+
+            rewardId:
+              member.reward_id,
+
+            rewardTitle:
+              member.reward_title,
+
+            rewardDescription:
+              member.reward_description,
+
+            rewardStarCost:
+              starCost,
+
+            progress,
+
+            starsRemaining:
+              starCost !== null
+                ? Math.max(
+                    0,
+                    starCost - stars
+                  )
+                : null,
+          };
+        }),
+      });
+    } catch (error) {
+      console.error(
+        "Reward goals error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Unable to load reward goals",
+      });
+    }
+  }
+);
+
+router.put(
+  "/rewards/goals/:memberId",
+  (req, res) => {
+    const memberId =
+      Number(req.params.memberId);
+
+    const {
+      rewardId,
+    } = req.body;
+
+    const member = db
+      .prepare(`
+        SELECT id
+        FROM family_members
+        WHERE id = ?
+          AND is_active = 1
+      `)
+      .get(memberId);
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        error:
+          "Family member not found",
+      });
+    }
+
+    if (
+      rewardId === null ||
+      rewardId === undefined ||
+      rewardId === ""
+    ) {
+      db.prepare(`
+        DELETE FROM family_reward_goals
+        WHERE family_member_id = ?
+      `).run(memberId);
+
+      return res.json({
+        success: true,
+        rewardId: null,
+      });
+    }
+
+    const reward = db
+      .prepare(`
+        SELECT id
+        FROM rewards
+        WHERE id = ?
+          AND is_active = 1
+      `)
+      .get(
+        Number(rewardId)
+      );
+
+    if (!reward) {
+      return res.status(404).json({
+        success: false,
+        error:
+          "Reward not found",
+      });
+    }
+
+    db.prepare(`
+      INSERT INTO family_reward_goals (
+        family_member_id,
+        reward_id
+      )
+      VALUES (?, ?)
+
+      ON CONFLICT(family_member_id)
+      DO UPDATE SET
+        reward_id =
+          excluded.reward_id,
+        updated_at =
+          CURRENT_TIMESTAMP
+    `).run(
+      memberId,
+      reward.id
+    );
+
+    res.json({
+      success: true,
+      familyMemberId:
+        memberId,
+      rewardId:
+        reward.id,
+    });
+  }
+);
+
+router.get(
+  "/rewards/summary",
+  (req, res) => {
+    const members = db
+      .prepare(`
+        SELECT
+          fm.id,
+          fm.name,
+          fm.colour,
+          fm.initials,
+          fm.photo_url,
+
+          COALESCE(
+            SUM(fst.stars),
+            0
+          ) AS stars
+
+        FROM family_members fm
+
+        LEFT JOIN family_star_transactions fst
+          ON fst.family_member_id = fm.id
+
+        WHERE fm.is_active = 1
+
+        GROUP BY
+          fm.id,
+          fm.name,
+          fm.colour,
+          fm.initials,
+          fm.photo_url,
+          fm.display_order
+
+        ORDER BY
+          fm.display_order ASC,
+          fm.name ASC
+      `)
+      .all();
+
+    res.json({
+      success: true,
+
+      members: members.map(
+        (member) => ({
+          ...member,
+
+          stars:
+            Number(member.stars) || 0,
+        })
+      ),
+    });
+  }
+);
 
 router.get("/", (req, res) => {
   const {
@@ -553,19 +1384,23 @@ router.get("/:id", (req, res) => {
 });
 
 router.post("/", (req, res) => {
-  const {
-    title,
-    description = null,
-    dueDate = null,
-    dueTime = null,
-    priority = "normal",
-    category = "chore",
-    memberIds = [],
-    isRecurring = false,
-    recurrenceRule = null,
-    recurrenceEndDate = null,
-    recurrenceCount = null,
-  } = req.body;
+
+const {
+  title,
+  description = null,
+  dueDate = null,
+  dueTime = null,
+  priority = "normal",
+  category = "chore",
+  reminderEnabled = false,
+  reminderMinutes = null,
+  memberIds = [],
+  isRecurring = false,
+  recurrenceRule = null,
+  recurrenceEndDate = null,
+  recurrenceCount = null,
+  starValue = 1,
+} = req.body;
 
   if (!title || !title.trim()) {
     return res.status(400).json({
@@ -584,6 +1419,22 @@ router.post("/", (req, res) => {
     });
   }
 
+  if (
+    reminderEnabled &&
+    (
+      !dueTime ||
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Task reminders require a due time and valid non-negative reminder minutes.",
+    });
+  }
+
   const createTask = db.transaction(() => {
     const result = db
       .prepare(`
@@ -594,12 +1445,14 @@ router.post("/", (req, res) => {
           due_time,
           priority,
           category,
+          reminder_enabled,
+          reminder_minutes,
           is_recurring,
           recurrence_rule,
           recurrence_end_date,
           recurrence_count
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         title.trim(),
@@ -608,6 +1461,10 @@ router.post("/", (req, res) => {
         dueTime,
         priority,
         category,
+        reminderEnabled ? 1 : 0,
+        reminderEnabled && reminderMinutes !== null
+          ? Number(reminderMinutes)
+          : null,
         isRecurring ? 1 : 0,
         isRecurring ? recurrenceRule : null,
         isRecurring ? recurrenceEndDate : null,
@@ -628,17 +1485,31 @@ router.post("/", (req, res) => {
       VALUES (?, ?)
     `);
 
-    for (
-      const memberId of
-      memberValidation.memberIds
-    ) {
-      insertMember.run(
-        taskId,
-        memberId
-      );
-    }
+for (
+  const memberId of
+  memberValidation.memberIds
+) {
+  insertMember.run(
+    taskId,
+    memberId
+  );
+}
 
-    return taskId;
+db.prepare(`
+  INSERT INTO task_rewards (
+    task_id,
+    star_value
+  )
+  VALUES (?, ?)
+`).run(
+  taskId,
+  Math.max(
+    0,
+    Number(starValue) || 0
+  )
+);
+
+return taskId;
   });
 
   const taskId = createTask();
@@ -668,11 +1539,14 @@ const {
   dueTime = null,
   priority = "normal",
   category = "chore",
+  reminderEnabled = false,
+  reminderMinutes = null,
   memberIds = [],
   isRecurring = false,
   recurrenceRule = null,
   recurrenceEndDate = null,
   recurrenceCount = null,
+  starValue = 1,
 } = req.body;
 
   if (!title || !title.trim()) {
@@ -692,6 +1566,22 @@ const {
     });
   }
 
+  if (
+    reminderEnabled &&
+    (
+      !dueTime ||
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Task reminders require a due time and valid non-negative reminder minutes.",
+    });
+  }
+
   const updateTask = db.transaction(() => {
     db.prepare(`
       UPDATE tasks
@@ -702,6 +1592,8 @@ const {
         due_time = ?,
         priority = ?,
         category = ?,
+        reminder_enabled = ?,
+        reminder_minutes = ?,
 is_recurring = ?,
 recurrence_rule = ?,
 recurrence_end_date = ?,
@@ -716,6 +1608,10 @@ updated_at = CURRENT_TIMESTAMP
   dueTime,
   priority,
   category,
+  reminderEnabled ? 1 : 0,
+  reminderEnabled && reminderMinutes !== null
+    ? Number(reminderMinutes)
+    : null,
   isRecurring ? 1 : 0,
   isRecurring ? recurrenceRule : null,
   isRecurring ? recurrenceEndDate : null,
@@ -738,9 +1634,30 @@ updated_at = CURRENT_TIMESTAMP
       VALUES (?, ?)
     `);
 
-    for (const memberId of memberValidation.memberIds) {
-      insertMember.run(taskId, memberId);
-    }
+for (const memberId of memberValidation.memberIds) {
+  insertMember.run(taskId, memberId);
+}
+
+db.prepare(`
+  INSERT INTO task_rewards (
+    task_id,
+    star_value
+  )
+  VALUES (?, ?)
+
+  ON CONFLICT(task_id)
+  DO UPDATE SET
+    star_value =
+      excluded.star_value,
+    updated_at =
+      CURRENT_TIMESTAMP
+`).run(
+  taskId,
+  Math.max(
+    0,
+    Number(starValue) || 0
+  )
+);
   });
 
   updateTask();
@@ -780,12 +1697,30 @@ router.put("/:id/occurrences/:occurrenceDate", (req, res) => {
     dueTime = null,
     priority = "normal",
     category = "chore",
+    reminderEnabled = null,
+    reminderMinutes = null,
   } = req.body;
 
   if (!title || !title.trim()) {
     return res.status(400).json({
       success: false,
       error: "Title is required",
+    });
+  }
+
+  if (
+    reminderEnabled === true &&
+    (
+      !dueTime ||
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Task reminders require a due time and valid non-negative reminder minutes.",
     });
   }
 
@@ -798,9 +1733,11 @@ router.put("/:id/occurrences/:occurrenceDate", (req, res) => {
       due_time,
       priority,
       category,
+      reminder_enabled,
+      reminder_minutes,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 
     ON CONFLICT (
       task_id,
@@ -812,6 +1749,8 @@ router.put("/:id/occurrences/:occurrenceDate", (req, res) => {
       due_time = excluded.due_time,
       priority = excluded.priority,
       category = excluded.category,
+      reminder_enabled = excluded.reminder_enabled,
+      reminder_minutes = excluded.reminder_minutes,
       is_deleted = 0,
       updated_at = CURRENT_TIMESTAMP
   `).run(
@@ -821,7 +1760,16 @@ router.put("/:id/occurrences/:occurrenceDate", (req, res) => {
     description,
     dueTime,
     priority,
-    category
+    category,
+    reminderEnabled === null
+      ? null
+      : reminderEnabled
+        ? 1
+        : 0,
+    reminderEnabled === true &&
+    reminderMinutes !== null
+      ? Number(reminderMinutes)
+      : null
   );
 
   const occurrenceState =
@@ -858,13 +1806,31 @@ router.put("/:id/occurrences/:occurrenceDate", (req, res) => {
         occurrenceState.category ??
         existingTask.category,
 
-      is_completed:
-        occurrenceState.is_completed,
+      reminder_enabled:
+        occurrenceState.reminder_enabled === null
+          ? existingTask.reminder_enabled
+          : occurrenceState.reminder_enabled,
 
-      completed_at:
-        occurrenceState.completed_at,
+      reminder_minutes:
+        occurrenceState.reminder_enabled === null
+          ? existingTask.reminder_minutes
+          : occurrenceState.reminder_enabled
+            ? occurrenceState.reminder_minutes
+            : null,
 
-      is_occurrence: true,
+is_completed:
+  occurrenceState.is_completed,
+
+completed_at:
+  occurrenceState.completed_at,
+
+members:
+  getMemberCompletionStates(
+    taskId,
+    occurrenceDate
+  ),
+
+is_occurrence: true,
 
       occurrence_date:
         occurrenceDate,
@@ -898,21 +1864,40 @@ router.put("/:id/future/:occurrenceDate", (req, res) => {
     });
   }
 
-  const {
-    title,
-    description = null,
-    dueTime = null,
-    priority = "normal",
-    category = "chore",
-    memberIds = [],
-    recurrenceRule = null,
-    recurrenceEndDate = null,
-  } = req.body;
+const {
+  title,
+  description = null,
+  dueTime = null,
+  priority = "normal",
+  category = "chore",
+  reminderEnabled = false,
+  reminderMinutes = null,
+  memberIds = [],
+  recurrenceRule = null,
+  recurrenceEndDate = null,
+  starValue = 1,
+} = req.body;
 
   if (!title || !title.trim()) {
     return res.status(400).json({
       success: false,
       error: "Title is required",
+    });
+  }
+
+  if (
+    reminderEnabled &&
+    (
+      !dueTime ||
+      reminderMinutes === null ||
+      !Number.isFinite(Number(reminderMinutes)) ||
+      Number(reminderMinutes) < 0
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Task reminders require a due time and valid non-negative reminder minutes.",
     });
   }
 
@@ -964,6 +1949,8 @@ router.put("/:id/future/:occurrenceDate", (req, res) => {
             due_time,
             priority,
             category,
+            reminder_enabled,
+            reminder_minutes,
             is_completed,
             is_recurring,
             recurrence_rule,
@@ -971,7 +1958,7 @@ router.put("/:id/future/:occurrenceDate", (req, res) => {
             recurrence_count
           )
           VALUES (
-            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?,
             0, 1, ?, ?, NULL
           )
         `).run(
@@ -981,6 +1968,10 @@ router.put("/:id/future/:occurrenceDate", (req, res) => {
           dueTime,
           priority,
           category,
+          reminderEnabled ? 1 : 0,
+          reminderEnabled && reminderMinutes !== null
+            ? Number(reminderMinutes)
+            : null,
           newRecurrenceRule,
           recurrenceEndDate ||
             originalEndDate ||
@@ -1010,14 +2001,28 @@ router.put("/:id/future/:occurrenceDate", (req, res) => {
               (member) => member.id
             );
 
-      for (const memberId of membersToUse) {
-        memberInsert.run(
-          newTaskId,
-          Number(memberId)
-        );
-      }
+for (const memberId of membersToUse) {
+  memberInsert.run(
+    newTaskId,
+    Number(memberId)
+  );
+}
 
-      return newTaskId;
+db.prepare(`
+  INSERT INTO task_rewards (
+    task_id,
+    star_value
+  )
+  VALUES (?, ?)
+`).run(
+  newTaskId,
+  Math.max(
+    0,
+    Number(starValue) || 0
+  )
+);
+
+return newTaskId;
     });
 
   try {
@@ -1203,6 +2208,324 @@ router.delete(
   }
 );
 
+router.patch(
+  "/:id/members/:memberId/completion",
+  (req, res) => {
+    const taskId =
+      Number(req.params.id);
+
+    const memberId =
+      Number(req.params.memberId);
+
+    const completed =
+      Boolean(req.body.completed);
+
+    const occurrenceDate =
+      req.body.occurrenceDate || "";
+
+    const existingTask =
+      getTaskById(taskId);
+
+    if (!existingTask) {
+      return res.status(404).json({
+        success: false,
+        error: "Task not found",
+      });
+    }
+
+    const assignedMember =
+      existingTask.members.find(
+        (member) =>
+          Number(member.id) === memberId
+      );
+
+    if (!assignedMember) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Family member is not assigned to this task",
+      });
+    }
+
+    if (
+      existingTask.is_recurring &&
+      !occurrenceDate
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Occurrence date is required for recurring tasks",
+      });
+    }
+
+    const completionDate =
+      existingTask.is_recurring
+        ? occurrenceDate
+        : "";
+
+    const completedAt =
+      completed
+        ? new Date().toISOString()
+        : null;
+
+    db.prepare(`
+      INSERT INTO task_member_completions (
+        task_id,
+        family_member_id,
+        occurrence_date,
+        is_completed,
+        completed_at,
+        updated_at
+      )
+      VALUES (
+        ?, ?, ?, ?, ?,
+        CURRENT_TIMESTAMP
+      )
+
+      ON CONFLICT (
+        task_id,
+        family_member_id,
+        occurrence_date
+      )
+      DO UPDATE SET
+        is_completed =
+          excluded.is_completed,
+        completed_at =
+          excluded.completed_at,
+        updated_at =
+          CURRENT_TIMESTAMP
+    `).run(
+      taskId,
+      memberId,
+      completionDate,
+      completed ? 1 : 0,
+      completedAt
+    );
+
+    const reward =
+  db.prepare(`
+    SELECT star_value
+    FROM task_rewards
+    WHERE task_id = ?
+  `).get(taskId);
+
+const starValue =
+  reward?.star_value ?? 1;
+
+if (completed) {
+  db.prepare(`
+    INSERT INTO family_star_transactions (
+      family_member_id,
+      task_id,
+      occurrence_date,
+      stars,
+      transaction_type,
+      description
+    )
+    VALUES (
+      ?, ?, ?, ?, 'task', ?
+    )
+
+    ON CONFLICT (
+      family_member_id,
+      task_id,
+      occurrence_date,
+      transaction_type
+    )
+    DO UPDATE SET
+      stars = excluded.stars,
+      description = excluded.description
+  `).run(
+    memberId,
+    taskId,
+    completionDate,
+    starValue,
+    existingTask.title
+  );
+} else {
+  db.prepare(`
+    DELETE FROM family_star_transactions
+    WHERE family_member_id = ?
+      AND task_id = ?
+      AND occurrence_date = ?
+      AND transaction_type = 'task'
+  `).run(
+    memberId,
+    taskId,
+    completionDate
+  );
+}
+
+    const memberStates =
+      getMemberCompletionStates(
+        taskId,
+        completionDate
+      );
+
+const completionSummary =
+  db.prepare(`
+    SELECT
+      (
+        SELECT COUNT(*)
+        FROM task_members
+        WHERE task_id = ?
+      ) AS assigned_count,
+
+      (
+        SELECT COUNT(*)
+        FROM task_member_completions tmc
+
+        INNER JOIN task_members tm
+          ON tm.task_id =
+            tmc.task_id
+          AND tm.family_member_id =
+            tmc.family_member_id
+
+        WHERE tmc.task_id = ?
+          AND tmc.occurrence_date = ?
+          AND tmc.is_completed = 1
+      ) AS completed_count
+  `).get(
+    taskId,
+    taskId,
+    completionDate
+  );
+
+const allCompleted =
+  completionSummary.assigned_count > 0 &&
+  completionSummary.completed_count ===
+    completionSummary.assigned_count;
+
+    const taskCompletedAt =
+      allCompleted
+        ? new Date().toISOString()
+        : null;
+
+    if (existingTask.is_recurring) {
+      db.prepare(`
+        INSERT INTO task_occurrences (
+          task_id,
+          occurrence_date,
+          is_completed,
+          completed_at,
+          updated_at
+        )
+        VALUES (
+          ?, ?, ?, ?,
+          CURRENT_TIMESTAMP
+        )
+
+        ON CONFLICT (
+          task_id,
+          occurrence_date
+        )
+        DO UPDATE SET
+          is_completed =
+            excluded.is_completed,
+          completed_at =
+            excluded.completed_at,
+          updated_at =
+            CURRENT_TIMESTAMP
+      `).run(
+        taskId,
+        occurrenceDate,
+        allCompleted ? 1 : 0,
+        taskCompletedAt
+      );
+
+      const occurrenceState =
+        getOccurrenceState(
+          taskId,
+          occurrenceDate
+        );
+
+      return res.json({
+        success: true,
+        task: {
+          ...existingTask,
+
+          title:
+            occurrenceState.title ??
+            existingTask.title,
+
+          description:
+            occurrenceState.description ??
+            existingTask.description,
+
+          due_date:
+            occurrenceDate,
+
+          due_time:
+            occurrenceState.due_time ??
+            existingTask.due_time,
+
+          priority:
+            occurrenceState.priority ??
+            existingTask.priority,
+
+          category:
+            occurrenceState.category ??
+            existingTask.category,
+
+          reminder_enabled:
+            occurrenceState.reminder_enabled === null
+              ? existingTask.reminder_enabled
+              : occurrenceState.reminder_enabled,
+
+          reminder_minutes:
+            occurrenceState.reminder_enabled === null
+              ? existingTask.reminder_minutes
+              : occurrenceState.reminder_enabled
+                ? occurrenceState.reminder_minutes
+                : null,
+
+          is_completed:
+            allCompleted,
+
+          completed_at:
+            taskCompletedAt,
+
+          members:
+            memberStates,
+
+          is_occurrence: true,
+
+          occurrence_date:
+            occurrenceDate,
+
+          occurrence_key:
+            `${taskId}:${occurrenceDate}`,
+        },
+      });
+    }
+
+    db.prepare(`
+      UPDATE tasks
+      SET
+        is_completed = ?,
+        completed_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      allCompleted ? 1 : 0,
+      taskCompletedAt,
+      taskId
+    );
+
+    return res.json({
+      success: true,
+      task: {
+        ...getTaskById(taskId),
+        members: memberStates,
+        is_completed:
+          allCompleted,
+        completed_at:
+          taskCompletedAt,
+      },
+    });
+  }
+);
+
 router.patch("/:id/completion", (req, res) => {
   const taskId = Number(req.params.id);
 
@@ -1281,6 +2604,19 @@ router.patch("/:id/completion", (req, res) => {
       task: {
         ...existingTask,
         due_date: occurrenceDate,
+
+        reminder_enabled:
+          occurrenceState.reminder_enabled === null
+            ? existingTask.reminder_enabled
+            : occurrenceState.reminder_enabled,
+
+        reminder_minutes:
+          occurrenceState.reminder_enabled === null
+            ? existingTask.reminder_minutes
+            : occurrenceState.reminder_enabled
+              ? occurrenceState.reminder_minutes
+              : null,
+
         is_completed:
           occurrenceState.is_completed,
         completed_at:
@@ -1294,28 +2630,90 @@ router.patch("/:id/completion", (req, res) => {
     });
   }
 
-  /*
-   * Normal non-recurring task
-   */
-  db.prepare(`
-    UPDATE tasks
-    SET
-      is_completed = ?,
-      completed_at = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(
-    completed ? 1 : 0,
-    completed
-      ? new Date().toISOString()
-      : null,
-    taskId
-  );
+/*
+ * Normal non-recurring task
+ */
+const completedAt =
+  completed
+    ? new Date().toISOString()
+    : null;
 
-  res.json({
-    success: true,
-    task: getTaskById(taskId),
+const updateNormalTask =
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE tasks
+      SET
+        is_completed = ?,
+        completed_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      completed ? 1 : 0,
+      completedAt,
+      taskId
+    );
+
+    const reward =
+      db.prepare(`
+        SELECT star_value
+        FROM task_rewards
+        WHERE task_id = ?
+      `).get(taskId);
+
+    const starValue =
+      Number(reward?.star_value) || 0;
+
+    for (const member of existingTask.members) {
+      if (completed) {
+        db.prepare(`
+          INSERT INTO family_star_transactions (
+            family_member_id,
+            task_id,
+            occurrence_date,
+            stars,
+            transaction_type,
+            description
+          )
+          VALUES (
+            ?, ?, '', ?, 'task', ?
+          )
+
+          ON CONFLICT (
+            family_member_id,
+            task_id,
+            occurrence_date,
+            transaction_type
+          )
+          DO UPDATE SET
+            stars = excluded.stars,
+            description = excluded.description
+        `).run(
+          member.id,
+          taskId,
+          starValue,
+          existingTask.title
+        );
+      } else {
+        db.prepare(`
+          DELETE FROM family_star_transactions
+          WHERE family_member_id = ?
+            AND task_id = ?
+            AND occurrence_date = ''
+            AND transaction_type = 'task'
+        `).run(
+          member.id,
+          taskId
+        );
+      }
+    }
   });
+
+updateNormalTask();
+
+res.json({
+  success: true,
+  task: getTaskById(taskId),
+});
 });
 
 router.delete("/:id", (req, res) => {
