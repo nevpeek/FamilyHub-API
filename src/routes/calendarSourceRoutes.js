@@ -285,8 +285,13 @@ tokens.expiry_date || null,
   );
 }
 
+const frontendUrl = (
+  process.env.FAMILYHUB_FRONTEND_URL ||
+  "http://localhost:5173"
+).replace(/\/+$/, "");
+
 res.redirect(
-  "http://localhost:5173/?google=connected"
+  `${frontendUrl}/?google=connected`
 );
 
   } catch (error) {
