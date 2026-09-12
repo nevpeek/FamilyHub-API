@@ -148,7 +148,10 @@ router.get("/google/connect", (req, res) => {
 
     const authUrl = getGoogleAuthUrl(state);
 
-    res.redirect(authUrl);
+    res.json({
+  success: true,
+  authUrl,
+});
   } catch (error) {
     console.error(
       "Failed to create Google Calendar auth URL:",

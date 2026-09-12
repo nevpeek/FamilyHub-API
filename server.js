@@ -26,6 +26,10 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
+const {
+  requireApiKey,
+} = require("./src/middleware/apiAuth");
+
 
 const PORT = process.env.PORT || 3001;
 
@@ -65,6 +69,8 @@ app.use(
     path.join(__dirname, "uploads")
   )
 );
+
+app.use("/api", requireApiKey);
 
 app.use("/api/family", familyRoutes);
 app.use("/api/events", eventRoutes);
