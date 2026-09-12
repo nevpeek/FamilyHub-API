@@ -12,6 +12,10 @@ const {
   getGoogleAccountInfo,
 } = require("../services/googleCalendarService");
 
+const {
+  encryptToken,
+} = require("../services/tokenCrypto");
+
 
 
 const db = require("../database/db");
@@ -245,12 +249,14 @@ if (existingConnection) {
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
-    account.email,
-    tokens.access_token ||
-      existingConnection.access_token,
-    tokens.refresh_token ||
-      existingConnection.refresh_token,
-    tokens.expiry_date || null,
+account.email,
+tokens.access_token
+  ? encryptToken(tokens.access_token)
+  : existingConnection.access_token,
+tokens.refresh_token
+  ? encryptToken(tokens.refresh_token)
+  : existingConnection.refresh_token,
+tokens.expiry_date || null,
     tokens.scope || null,
     tokens.token_type || null,
     existingConnection.id
@@ -269,11 +275,11 @@ if (existingConnection) {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
   `).run(
-    account.googleAccountId,
-    account.email,
-    tokens.access_token || null,
-    tokens.refresh_token || null,
-    tokens.expiry_date || null,
+account.googleAccountId,
+account.email,
+encryptToken(tokens.access_token),
+encryptToken(tokens.refresh_token),
+tokens.expiry_date || null,
     tokens.scope || null,
     tokens.token_type || null
   );
@@ -332,9 +338,9 @@ applyGoogleConnectionCredentials(
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
-      tokens.access_token || null,
-      tokens.refresh_token || null,
-      tokens.expiry_date || null,
+encryptToken(tokens.access_token),
+encryptToken(tokens.refresh_token),
+tokens.expiry_date || null,
       tokens.scope || null,
       tokens.token_type || null,
       connection.id

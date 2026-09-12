@@ -10,6 +10,10 @@ const {
   fetchGoogleCalendarEvents,
 } = require("./googleCalendarService");
 
+const {
+  encryptToken,
+} = require("./tokenCrypto");
+
 function formatLocalDate(date) {
   const year = date.getFullYear();
   const month = String(
@@ -221,13 +225,13 @@ async function syncCalendarSource(sourceId) {
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(
-          tokens.access_token || null,
-          tokens.refresh_token || null,
-          tokens.expiry_date || null,
-          tokens.scope || null,
-          tokens.token_type || null,
-          connection.id
-        );
+  encryptToken(tokens.access_token),
+  encryptToken(tokens.refresh_token),
+  tokens.expiry_date || null,
+  tokens.scope || null,
+  tokens.token_type || null,
+  connection.id
+);
       }
     );
 

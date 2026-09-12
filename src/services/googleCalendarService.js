@@ -1,4 +1,7 @@
 const { google } = require("googleapis");
+const {
+  decryptToken,
+} = require("./tokenCrypto");
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
@@ -45,11 +48,15 @@ function applyGoogleConnectionCredentials(
   connection,
   onTokens = null
 ) {
-  oauth2Client.setCredentials({
-    access_token: connection.access_token,
-    refresh_token: connection.refresh_token,
-    expiry_date: connection.token_expiry,
-  });
+oauth2Client.setCredentials({
+  access_token: decryptToken(
+    connection.access_token
+  ),
+  refresh_token: decryptToken(
+    connection.refresh_token
+  ),
+  expiry_date: connection.token_expiry,
+});
 
   if (typeof onTokens === "function") {
     oauth2Client.on("tokens", (tokens) => {
