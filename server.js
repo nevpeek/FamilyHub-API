@@ -3,7 +3,6 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const http = require("http");
 const path = require("path");
-const { Server } = require("socket.io");
 const db = require("./src/database/db");
 const familyRoutes = require("./src/routes/familyRoutes");
 const eventRoutes = require("./src/routes/eventRoutes");
@@ -85,12 +84,6 @@ app.use("/api/shopping", shoppingRoutes);
 app.use("/api/pantry", pantryRoutes);
 app.use("/api/meal-wheel-groups", mealWheelRoutes);
 
-const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  },
-});
 
 app.get("/api/health", (req, res) => {
   const databaseStatus = db
@@ -106,13 +99,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-io.on("connection", (socket) => {
-  console.log(`FamilyHub client connected: ${socket.id}`);
-
-  socket.on("disconnect", () => {
-    console.log(`FamilyHub client disconnected: ${socket.id}`);
-  });
-});
 
 server.listen(PORT, () => {
   console.log("");
