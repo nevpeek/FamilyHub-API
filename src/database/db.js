@@ -1,6 +1,7 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
+const runMigrations = require("../db/runMigrations");
 
 const dataDirectory = path.join(__dirname, "../../data");
 const databasePath = path.join(dataDirectory, "familyhub.db");
@@ -741,5 +742,7 @@ addColumnIfMissing(
   "reminder_minutes",
   "INTEGER"
 );
+
+runMigrations(db);
 
 module.exports = db;
