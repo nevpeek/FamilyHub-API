@@ -29,7 +29,34 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+const allowedOrigins = (
+  process.env.FAMILYHUB_ALLOWED_ORIGINS ||
+  "http://localhost:5173,http://127.0.0.1:5173"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow requests without a browser Origin header,
+    // such as local scripts, health checks, and server-to-server calls.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(
+      new Error(`CORS blocked request from origin: ${origin}`)
+    );
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 app.use(
@@ -54,8 +81,8 @@ app.use("/api/meal-wheel-groups", mealWheelRoutes);
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    origin: allowedOrigins,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   },
 });
 
