@@ -737,6 +737,14 @@ router.post(
       });
     }
 
+const starCost =
+  Math.max(
+    0,
+    Number(reward.star_cost) || 0
+  );
+
+const redeemReward =
+  db.transaction(() => {
     const balanceRow = db
       .prepare(`
         SELECT
@@ -752,67 +760,57 @@ router.post(
     const currentBalance =
       Number(balanceRow?.stars) || 0;
 
-    const starCost =
-      Math.max(
-        0,
-        Number(reward.star_cost) || 0
-      );
-
     if (currentBalance < starCost) {
-      return res.status(400).json({
+      return {
         success: false,
-        error:
-          `${member.name} needs ${
-            starCost - currentBalance
-          } more stars`,
         balance: currentBalance,
-        required: starCost,
-      });
+      };
     }
 
-    const redeemReward =
-      db.transaction(() => {
-        db.prepare(`
-          INSERT INTO
-            family_star_transactions (
-              family_member_id,
-              task_id,
-              occurrence_date,
-              stars,
-              transaction_type,
-              description
-            )
-          VALUES (
-            ?, NULL, '', ?,
-            'redemption', ?
-          )
-        `).run(
-          member.id,
-          -starCost,
-          `Redeemed: ${reward.title}`
-        );
+    db.prepare(`
+      INSERT INTO
+        family_star_transactions (
+          family_member_id,
+          task_id,
+          occurrence_date,
+          stars,
+          transaction_type,
+          description
+        )
+      VALUES (
+        ?, NULL, '', ?,
+        'redemption', ?
+      )
+    `).run(
+      member.id,
+      -starCost,
+      `Redeemed: ${reward.title}`
+    );
 
-        const updatedBalance =
-          db.prepare(`
-            SELECT
-              COALESCE(
-                SUM(stars),
-                0
-              ) AS stars
-            FROM family_star_transactions
-            WHERE family_member_id = ?
-          `)
-          .get(member.id);
+    return {
+      success: true,
+      balance:
+        currentBalance - starCost,
+    };
+  });
 
-        return (
-          Number(
-            updatedBalance?.stars
-          ) || 0
-        );
-      });
+const redemptionResult =
+  redeemReward();
 
-    const newBalance =
-      redeemReward();
+if (!redemptionResult.success) {
+  return res.status(400).json({
+    success: false,
+    error:
+      `${member.name} needs ${
+        starCost - redemptionResult.balance
+      } more stars`,
+    balance: redemptionResult.balance,
+    required: starCost,
+  });
+}
+
+const newBalance =
+  redemptionResult.balance;
 
     res.json({
       success: true,
