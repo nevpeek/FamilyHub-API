@@ -246,18 +246,132 @@ function parseInstructions(value) {
 
   const steps = [];
 
+  function cleanInstruction(value) {
+    const text = stripHtml(value);
+
+    if (!text) {
+      return null;
+    }
+
+    return String(text)
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/([,;:!?])(?=\S)/g, "$1 ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+  }
+
+  function splitInstructionBlock(value) {
+    const text =
+      cleanInstruction(value);
+
+    if (!text) {
+      return [];
+    }
+
+    /*
+     * Some recipe sites bundle several named
+     * method steps into one HowToStep:
+     *
+     * Sauté - Heat oil...
+     * Cook lamb - Turn heat...
+     * Make sauce - Add flour...
+     *
+     * Detect those headings and split them
+     * into individual FamilyHub steps.
+     */
+    const headingPattern =
+      /(?:^|\s)(Sauté|Saute|Cook lamb|Cook beef|Cook chicken|Cook pork|Cook mince|Make sauce|Make filling|Make topping|Make mash|Mash|Assemble|Bake|Grill|Roast|Simmer|Boil|Fry|Cook|Serve|Rest|Prepare|Mix|Combine|Add vegetables|Add liquid)\s*[-–—:]\s*/gi;
+
+    const matches = [
+      ...text.matchAll(
+        headingPattern
+      ),
+    ];
+
+    /*
+     * If there aren't multiple named sections,
+     * keep the website's original step intact.
+     */
+    if (matches.length < 2) {
+      return [text];
+    }
+
+    const result = [];
+
+    /*
+     * Preserve any useful text appearing before
+     * the first detected heading.
+     */
+    const beforeFirst =
+      text
+        .slice(
+          0,
+          matches[0].index
+        )
+        .trim();
+
+    if (beforeFirst) {
+      result.push(beforeFirst);
+    }
+
+    matches.forEach(
+      (match, index) => {
+        const heading =
+          match[1].trim();
+
+        const contentStart =
+          match.index +
+          match[0].length;
+
+        const contentEnd =
+          index + 1 <
+          matches.length
+            ? matches[index + 1]
+                .index
+            : text.length;
+
+        const content =
+          text
+            .slice(
+              contentStart,
+              contentEnd
+            )
+            .trim();
+
+        if (!content) {
+          return;
+        }
+
+        result.push(
+          `${heading}: ${content}`
+        );
+      }
+    );
+
+    return result;
+  }
+
+  function addInstruction(value) {
+    const parsedSteps =
+      splitInstructionBlock(value);
+
+    parsedSteps.forEach(
+      (step) => {
+        if (step) {
+          steps.push(step);
+        }
+      }
+    );
+  }
+
   function collect(item) {
     if (!item) {
       return;
     }
 
     if (typeof item === "string") {
-      const text = stripHtml(item);
-
-      if (text) {
-        steps.push(text);
-      }
-
+      addInstruction(item);
       return;
     }
 
@@ -267,25 +381,230 @@ function parseInstructions(value) {
     }
 
     if (typeof item === "object") {
+      /*
+       * Normal HowToStep.
+       */
       if (item.text) {
-        const text = stripHtml(item.text);
-
-        if (text) {
-          steps.push(text);
-        }
+        addInstruction(
+          item.text
+        );
       }
 
+      /*
+       * Some websites use HowToSection
+       * containing nested HowToSteps.
+       */
       if (item.itemListElement) {
-        collect(item.itemListElement);
+        collect(
+          item.itemListElement
+        );
       }
     }
   }
 
   collect(value);
 
-  return steps.length
-    ? steps.join("\n")
+  /*
+   * Remove consecutive duplicates.
+   */
+  const uniqueSteps =
+    steps.filter(
+      (step, index) =>
+        index === 0 ||
+        step !==
+          steps[index - 1]
+    );
+
+  return uniqueSteps.length
+    ? uniqueSteps.join("\n")
     : null;
+}
+
+function cleanImportedDescription(value) {
+  const text = stripHtml(value);
+
+  if (!text) {
+    return null;
+  }
+
+  return String(text)
+    .replace(/\u00a0/g, " ")
+
+    /* Common website/video intro rubbish */
+    .replace(
+      /^\s*recipe\s+video\s+(?:above|below)\.?\s*/i,
+      ""
+    )
+    .replace(
+      /^\s*video\s+(?:above|below)\.?\s*/i,
+      ""
+    )
+    .replace(
+      /^\s*watch\s+(?:the\s+)?recipe\s+video\s+(?:above|below)\.?\s*/i,
+      ""
+    )
+
+    /* Clean spaces around punctuation */
+    .replace(/\s+([,.;:!?])/g, "$1")
+
+    /* Collapse repeated whitespace */
+    .replace(/[ \t]{2,}/g, " ")
+
+    .trim();
+}
+
+function cleanImportedIngredient(value) {
+  const text = stripHtml(value);
+
+  if (!text) {
+    return null;
+  }
+
+  let cleaned = String(text)
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  /*
+   * Recipe sites sometimes produce malformed notes:
+   *
+   *   garlic cloves (, minced)
+   *   onion (, finely chopped)
+   *   bouillon cube (, crumbled (OXO brand crumbles easily))
+   *
+   * Convert the malformed "(," wrapper into a normal comma.
+   */
+  cleaned = cleaned.replace(
+    /\s*\(\s*,\s*/g,
+    ", "
+  );
+
+  /*
+   * After removing "(," above, the matching outer closing
+   * bracket can be left behind:
+   *
+   *   garlic cloves, minced)
+   *   onion, finely chopped)
+   *   bouillon cube, crumbled (OXO brand crumbles easily))
+   *
+   * Remove ONLY unmatched closing brackets from the end.
+   * Useful balanced brackets such as (30g) and (2.2 lb)
+   * are preserved.
+   */
+  while (cleaned.endsWith(")")) {
+    const openingCount =
+      (cleaned.match(/\(/g) || []).length;
+
+    const closingCount =
+      (cleaned.match(/\)/g) || []).length;
+
+    if (closingCount <= openingCount) {
+      break;
+    }
+
+    cleaned =
+      cleaned.slice(0, -1).trim();
+  }
+
+  /*
+   * Flatten accidental double brackets:
+   *
+   *   ((or water))
+   *   ((whole or low fat))
+   *
+   * becomes:
+   *
+   *   (or water)
+   *   (whole or low fat)
+   */
+  let previous;
+
+  do {
+    previous = cleaned;
+
+    cleaned = cleaned.replace(
+      /\(\s*\(([^()]*)\)\s*\)/g,
+      "($1)"
+    );
+  } while (cleaned !== previous);
+
+  /*
+   * Convert ordinary preparation notes to comma text.
+   *
+   *   garlic cloves (minced)
+   *   onion (finely chopped)
+   *   butter (melted)
+   *
+   * becomes:
+   *
+   *   garlic cloves, minced
+   *   onion, finely chopped
+   *   butter, melted
+   *
+   * Do NOT touch measurements such as:
+   *
+   *   1.2kg (2.2 lb)
+   *   2 tbsp (30g)
+   *   2.5cm (1")
+   */
+  cleaned = cleaned.replace(
+    /\s*\(\s*(minced|finely minced|chopped|finely chopped|diced|finely diced|sliced|thinly sliced|grated|shredded|melted|softened|crushed|peeled|optional)\s*\)/gi,
+    ", $1"
+  );
+
+  /*
+   * "or" notes are useful, but don't need brackets:
+   *
+   *   red wine (or water)
+   *   milk (whole or low fat)
+   *
+   * becomes:
+   *
+   *   red wine, or water
+   *   milk, whole or low fat
+   */
+  cleaned = cleaned.replace(
+    /\s*\(\s*(or\s+[^()]+|whole\s+or\s+low\s+fat)\s*\)/gi,
+    ", $1"
+  );
+
+  /*
+   * Normalise spacing inside any useful brackets that remain.
+   */
+  cleaned = cleaned
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")");
+
+  /*
+   * Clean punctuation and whitespace.
+   */
+  cleaned = cleaned
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/,\s*/g, ", ")
+    .replace(/,\s*,+/g, ", ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  /*
+   * Final safety pass:
+   * remove only genuinely unmatched closing brackets.
+   */
+  while (cleaned.endsWith(")")) {
+    const openingCount =
+      (cleaned.match(/\(/g) || []).length;
+
+    const closingCount =
+      (cleaned.match(/\)/g) || []).length;
+
+    if (closingCount <= openingCount) {
+      break;
+    }
+
+    cleaned =
+      cleaned.slice(0, -1).trim();
+  }
+
+  return cleaned;
 }
 
 function parseServings(value) {
@@ -310,110 +629,172 @@ function parseServings(value) {
     : null;
 }
 
-function parseCategory(value) {
-  if (!value) {
-    return null;
-  }
+function parseCategory(value, recipe = {}) {
+  const categoryText = Array.isArray(value)
+    ? value.join(" ")
+    : String(value || "");
 
-  const rawCategory =
-    Array.isArray(value)
-      ? value[0]
-      : String(value)
-          .split(",")[0];
+  const cuisineText = Array.isArray(
+    recipe.recipeCuisine
+  )
+    ? recipe.recipeCuisine.join(" ")
+    : String(
+        recipe.recipeCuisine || ""
+      );
 
-  const category =
-    String(rawCategory)
-      .trim()
-      .toLowerCase()
-      .replace(/[_\s]+/g, "-");
+  const keywordsText = Array.isArray(
+    recipe.keywords
+  )
+    ? recipe.keywords.join(" ")
+    : String(
+        recipe.keywords || ""
+      );
 
-  const mappings = {
-    breakfast: "breakfast",
-    brunch: "breakfast",
+  const nameText =
+    String(recipe.name || "");
 
-    lunch: "lunch",
+  const descriptionText =
+    String(recipe.description || "");
 
-    dinner: "dinner",
-    "main-course": "dinner",
-    "main-dish": "dinner",
-    main: "dinner",
-    entree: "dinner",
-    "main-meal": "dinner",
+  const haystack = [
+    categoryText,
+    cuisineText,
+    keywordsText,
+    nameText,
+    descriptionText,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ");
 
-    pasta: "pasta",
-
-    bbq: "bbq",
-    barbecue: "bbq",
-    grilling: "bbq",
-    grill: "bbq",
-
-    "slow-cooker": "slow-cooker",
-    crockpot: "slow-cooker",
-    "crock-pot": "slow-cooker",
-
-    dessert: "dessert",
-    desserts: "dessert",
-    cake: "dessert",
-    cakes: "dessert",
-    baking: "dessert",
-
-    snack: "snack",
-    snacks: "snack",
-  };
-
-  if (mappings[category]) {
-    return mappings[category];
-  }
+  /*
+   * Specific meal styles first.
+   * This avoids generic words such as
+   * "dinner" or "main course" winning.
+   */
 
   if (
-    category.includes("breakfast") ||
-    category.includes("brunch")
+    /\bpasta\b/.test(haystack) ||
+    /\bspaghetti\b/.test(haystack) ||
+    /\bfettuccine\b/.test(haystack) ||
+    /\blinguine\b/.test(haystack) ||
+    /\bpenne\b/.test(haystack) ||
+    /\bravioli\b/.test(haystack) ||
+    /\blasagne\b/.test(haystack) ||
+    /\blasagna\b/.test(haystack)
   ) {
-    return "breakfast";
-  }
-
-  if (category.includes("lunch")) {
-    return "lunch";
-  }
-
-  if (
-    category.includes("dinner") ||
-    category.includes("main-course") ||
-    category.includes("main-dish") ||
-    category.includes("entree")
-  ) {
-    return "dinner";
-  }
-
-  if (category.includes("pasta")) {
     return "pasta";
   }
 
   if (
-    category.includes("bbq") ||
-    category.includes("barbecue") ||
-    category.includes("grill")
+    /\bmexican\b/.test(haystack) ||
+    /\btaco\b/.test(haystack) ||
+    /\btacos\b/.test(haystack) ||
+    /\bburrito\b/.test(haystack) ||
+    /\bquesadilla\b/.test(haystack) ||
+    /\benchilada\b/.test(haystack) ||
+    /\bfajita\b/.test(haystack)
   ) {
-    return "bbq";
+    return "mexican";
   }
 
   if (
-    category.includes("slow-cooker") ||
-    category.includes("crock")
+    /\bindian\b/.test(haystack) ||
+    /\bcurry\b/.test(haystack) ||
+    /\btikka\b/.test(haystack) ||
+    /\bmasala\b/.test(haystack) ||
+    /\bkorma\b/.test(haystack) ||
+    /\bbiryani\b/.test(haystack)
+  ) {
+    return "indian";
+  }
+
+  if (
+    /\bchinese\b/.test(haystack) ||
+    /\bjapanese\b/.test(haystack) ||
+    /\bkorean\b/.test(haystack) ||
+    /\bthai\b/.test(haystack) ||
+    /\bvietnamese\b/.test(haystack) ||
+    /\basian\b/.test(haystack) ||
+    /\bstir fry\b/.test(haystack) ||
+    /\bstir-fry\b/.test(haystack)
+  ) {
+    return "asian";
+  }
+
+  if (
+    /\bpizza\b/.test(haystack)
+  ) {
+    return "pizza";
+  }
+
+  if (
+    /\bslow cooker\b/.test(haystack) ||
+    /\bslow cooked\b/.test(haystack) ||
+    /\bcrockpot\b/.test(haystack) ||
+    /\bcrock pot\b/.test(haystack)
   ) {
     return "slow-cooker";
   }
 
   if (
-    category.includes("dessert") ||
-    category.includes("cake") ||
-    category.includes("sweet")
+    /\bbbq\b/.test(haystack) ||
+    /\bbarbecue\b/.test(haystack) ||
+    /\bgrilled\b/.test(haystack) ||
+    /\bgrilling\b/.test(haystack)
   ) {
-    return "dessert";
+    return "bbq";
   }
 
-  if (category.includes("snack")) {
-    return "snack";
+  if (
+    /\bseafood\b/.test(haystack) ||
+    /\bfish\b/.test(haystack) ||
+    /\bsalmon\b/.test(haystack) ||
+    /\btuna\b/.test(haystack) ||
+    /\bprawn\b/.test(haystack) ||
+    /\bprawns\b/.test(haystack) ||
+    /\bshrimp\b/.test(haystack)
+  ) {
+    return "seafood";
+  }
+
+  if (
+    /\bvegetarian\b/.test(haystack) ||
+    /\bvegan\b/.test(haystack) ||
+    /\bmeatless\b/.test(haystack)
+  ) {
+    return "vegetarian";
+  }
+
+  /*
+   * Meat categories come after cuisine/style,
+   * so "Indian chicken curry" becomes Indian
+   * rather than Chicken.
+   */
+
+  if (
+    /\bchicken\b/.test(haystack)
+  ) {
+    return "chicken";
+  }
+
+  if (
+    /\bbeef\b/.test(haystack) ||
+    /\bsteak\b/.test(haystack) ||
+    /\bmince\b/.test(haystack) ||
+    /\bground beef\b/.test(haystack) ||
+    /\blamb\b/.test(haystack) ||
+    /\bshepherd'?s pie\b/.test(haystack)
+  ) {
+    return "beef";
+  }
+
+  if (
+    /\bpork\b/.test(haystack) ||
+    /\bbacon\b/.test(haystack) ||
+    /\bham\b/.test(haystack)
+  ) {
+    return "pork";
   }
 
   return "other";
@@ -661,17 +1042,19 @@ router.post(
         });
       }
 
-      const ingredientList =
-        Array.isArray(
-          structuredRecipe.recipeIngredient
+const ingredientList =
+  Array.isArray(
+    structuredRecipe.recipeIngredient
+  )
+    ? structuredRecipe.recipeIngredient
+        .map(
+          (item) =>
+            cleanImportedIngredient(
+              item
+            )
         )
-          ? structuredRecipe.recipeIngredient
-              .map(
-                (item) =>
-                  stripHtml(item)
-              )
-              .filter(Boolean)
-          : [];
+        .filter(Boolean)
+    : [];
 
       const imageUrl =
         getRecipeImageUrl(
@@ -711,10 +1094,10 @@ router.post(
             structuredRecipe.name
           ) || "",
 
-        description:
-          stripHtml(
-            structuredRecipe.description
-          ),
+description:
+  cleanImportedDescription(
+    structuredRecipe.description
+  ),
 
         ingredients:
           ingredientList.length
@@ -742,10 +1125,11 @@ router.post(
             structuredRecipe.recipeYield
           ),
 
-        category:
-          parseCategory(
-            structuredRecipe.recipeCategory
-          ),
+category:
+  parseCategory(
+    structuredRecipe.recipeCategory,
+    structuredRecipe
+  ),
       };
 
       res.json({

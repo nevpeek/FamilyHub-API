@@ -1,5 +1,8 @@
 const express = require("express");
 const db = require("../database/db");
+const {
+  upsertPantryFromShopping,
+} = require("../services/pantryOperations");
 
 const router = express.Router();
 
@@ -674,8 +677,9 @@ router.post("/from-meal-plan/preview", (req, res) => {
       FROM meals m
       LEFT JOIN recipes r
         ON r.id = m.recipe_id
-      WHERE m.meal_date >= ?
-        AND m.meal_date <= ?
+WHERE m.meal_date >= ?
+  AND m.meal_date <= ?
+  AND m.meal_type = 'dinner'
         AND m.recipe_id IS NOT NULL
         AND r.ingredients IS NOT NULL
         AND TRIM(r.ingredients) <> ''
@@ -1009,6 +1013,127 @@ router.post("/from-meal-plan", (req, res) => {
   });
 });
 
+router.post("/from-pantry", (req, res) => {
+  const {
+    name,
+    category = "other",
+  } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Pantry item name is required",
+    });
+  }
+
+  const normalizedName =
+    normalizeIngredientName(name);
+
+  const existingItems =
+    db.prepare(`
+      SELECT
+        id,
+        name
+      FROM shopping_items
+      WHERE is_completed = 0
+    `).all();
+
+  const existing =
+    existingItems.find(
+      (item) =>
+        normalizeIngredientName(
+          item.name
+        ) === normalizedName
+    );
+
+  if (existing) {
+    return res.json({
+      success: true,
+      alreadyExists: true,
+      item:
+        getShoppingItemById(
+          existing.id
+        ),
+    });
+  }
+
+  const activeMembers =
+    db.prepare(`
+      SELECT id
+      FROM family_members
+      WHERE is_active = 1
+      ORDER BY
+        display_order ASC,
+        name ASC
+    `).all();
+
+  if (activeMembers.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "No active family members are available",
+    });
+  }
+
+  const createShoppingItem =
+    db.transaction(() => {
+      const result =
+        db.prepare(`
+          INSERT INTO shopping_items (
+            name,
+            quantity,
+            category,
+            notes
+          )
+          VALUES (?, ?, ?, ?)
+        `).run(
+          name.trim(),
+          null,
+          category || "other",
+          "Added from Pantry · Running Low"
+        );
+
+      const shoppingItemId =
+        Number(
+          result.lastInsertRowid
+        );
+
+      const insertMember =
+        db.prepare(`
+          INSERT INTO shopping_item_members (
+            shopping_item_id,
+            family_member_id
+          )
+          VALUES (?, ?)
+        `);
+
+      for (
+        const member of
+        activeMembers
+      ) {
+        insertMember.run(
+          shoppingItemId,
+          member.id
+        );
+      }
+
+      return shoppingItemId;
+    });
+
+  const shoppingItemId =
+    createShoppingItem();
+
+  res.status(201).json({
+    success: true,
+    alreadyExists: false,
+    item:
+      getShoppingItemById(
+        shoppingItemId
+      ),
+  });
+});
+
 router.post("/", (req, res) => {
   let {
     name,
@@ -1041,15 +1166,24 @@ router.post("/", (req, res) => {
    * 500g mince
    * 1 onion
    * 2 carrots
+   * 2 garlic cloves (, minced)
    *
-   * Split those into clean name + quantity.
+   * Split those into clean name + quantity,
+   * then remove recipe-only preparation wording.
    */
   if (!quantity) {
     const parsed =
       parseIngredientLine(name);
 
     if (parsed) {
-      name = parsed.name;
+      const simplifiedName =
+        simplifyRecipeIngredientName(
+          parsed.name
+        );
+
+      name =
+        simplifiedName ||
+        parsed.name;
 
       if (parsed.quantity) {
         quantity =
@@ -1058,7 +1192,7 @@ router.post("/", (req, res) => {
     }
   }
 
-    if (
+  if (
     !category ||
     category === "other"
   ) {
@@ -1353,40 +1487,103 @@ router.patch("/:id/completion", (req, res) => {
 
   const completed =
     Boolean(req.body.completed);
+  const restockPantry =
+    req.body.restockPantry === true;
 
-  const existingItem =
-    getShoppingItemById(
-      shoppingItemId
+  const updateCompletion =
+    db.transaction(() => {
+      const existingItem =
+        getShoppingItemById(
+          shoppingItemId
+        );
+
+      if (!existingItem) {
+        return null;
+      }
+
+      const transitioned =
+        existingItem.is_completed !==
+        completed;
+
+      let pantryRestock = {
+        applied: false,
+      };
+
+      if (
+        transitioned &&
+        completed &&
+        restockPantry
+      ) {
+        const result =
+          upsertPantryFromShopping({
+            name: existingItem.name,
+            quantity:
+              existingItem.quantity,
+            category:
+              existingItem.category,
+            notes: existingItem.notes,
+          });
+
+        pantryRestock = {
+          applied: true,
+          ...result,
+        };
+      }
+
+      if (transitioned) {
+        db.prepare(`
+          UPDATE shopping_items
+          SET
+            is_completed = ?,
+            completed_at = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(
+          completed ? 1 : 0,
+          completed
+            ? new Date().toISOString()
+            : null,
+          shoppingItemId
+        );
+      }
+
+      return {
+        item:
+          getShoppingItemById(
+            shoppingItemId
+          ),
+        transitioned,
+        pantryRestock,
+      };
+    });
+
+  let result;
+
+  try {
+    result = updateCompletion();
+  } catch (error) {
+    console.error(
+      "Shopping completion error:",
+      error
     );
 
-  if (!existingItem) {
+    return res.status(500).json({
+      success: false,
+      error:
+        "Unable to update shopping item",
+    });
+  }
+
+  if (!result) {
     return res.status(404).json({
       success: false,
       error: "Shopping item not found",
     });
   }
 
-  db.prepare(`
-    UPDATE shopping_items
-    SET
-      is_completed = ?,
-      completed_at = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(
-    completed ? 1 : 0,
-    completed
-      ? new Date().toISOString()
-      : null,
-    shoppingItemId
-  );
-
   res.json({
     success: true,
-    item:
-      getShoppingItemById(
-        shoppingItemId
-      ),
+    ...result,
   });
 });
 

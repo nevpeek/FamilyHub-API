@@ -1,6 +1,9 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+
+dotenv.config();
+
 const http = require("http");
 const path = require("path");
 const db = require("./src/database/db");
@@ -15,12 +18,15 @@ const {
 const taskRoutes = require("./src/routes/taskRoutes");
 const listRoutes = require("./src/routes/listRoutes");
 const mealRoutes = require("./src/routes/mealRoutes");
+const mealTemplateRoutes = require("./src/routes/mealTemplateRoutes");
 const recipeRoutes = require("./src/routes/recipeRoutes");
 const shoppingRoutes = require("./src/routes/shoppingRoutes");
 const pantryRoutes = require("./src/routes/pantryRoutes");
 const mealWheelRoutes = require("./src/routes/mealWheelRoutes");
+const cameraRoutes = require("./src/routes/cameraRoutes");
+const foodImageRoutes = require("./src/routes/foodImageRoutes");
+const familyCheckinRoutes = require("./src/routes/familyCheckinRoutes");
 
-dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
@@ -79,10 +85,14 @@ app.use("/api/calendar-sources", calendarSourceRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/lists", listRoutes);
 app.use("/api/meals", mealRoutes);
+app.use("/api/meal-templates", mealTemplateRoutes);
 app.use("/api/recipes", recipeRoutes);
 app.use("/api/shopping", shoppingRoutes);
 app.use("/api/pantry", pantryRoutes);
 app.use("/api/meal-wheel-groups", mealWheelRoutes);
+app.use("/api/cameras", cameraRoutes);
+app.use("/api/food-images", foodImageRoutes);
+app.use("/api/family-checkins", familyCheckinRoutes);
 
 
 app.get("/api/health", (req, res) => {

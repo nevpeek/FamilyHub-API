@@ -9,3 +9,7 @@ data/*.db-wal
 data/backups/
 uploads/
 test-calendar.ics
+
+# Local runtime and test artifacts
+*.log
+garage-test.jpg

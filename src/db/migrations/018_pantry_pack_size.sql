@@ -1,0 +1,2 @@
+ALTER TABLE pantry_items
+ADD COLUMN pack_size TEXT DEFAULT NULL;

@@ -1,0 +1,2 @@
+ALTER TABLE food_image_cache
+ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0;
