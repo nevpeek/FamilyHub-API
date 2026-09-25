@@ -110,7 +110,7 @@ test("apply-template skips occupied household slots and retry never duplicates m
   const request = { templateId: saved.id, weekStart: "2026-09-21" };
   const result = await call("POST", "/meals/operations/apply-template", request);
   assert.equal(result.status, 200);
-  assert.equal(result.data.createdMeals.length, 1); assert.equal(result.data.skippedMeals.length, 1);
+  assert.equal(result.data.createdMeals.length, 1); assert.equal(result.data.keptMeals.length, 1);
   assert.equal(result.data.createdMeals[0].reminder_enabled, 1);
   assert.equal(result.data.createdMeals[0].meal_time, "18:30");
   assert.deepEqual(await get(hidden.id), hidden);
