@@ -2533,10 +2533,17 @@ router.patch("/:id/completion", (req, res) => {
   const occurrenceDate =
     req.body.occurrenceDate || null;
 
-  const existingTask =
-    getTaskById(taskId);
+const existingTask =
+  getTaskById(taskId);
 
-    if (
+if (!existingTask) {
+  return res.status(404).json({
+    success: false,
+    error: "Task not found",
+  });
+}
+
+if (
   existingTask.is_recurring &&
   !occurrenceDate
 ) {
