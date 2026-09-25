@@ -2077,6 +2077,8 @@ router.delete(
       });
     }
 
+const deleteOccurrence =
+  db.transaction(() => {
     db.prepare(`
       INSERT INTO task_occurrences (
         task_id,
@@ -2092,11 +2094,35 @@ router.delete(
       )
       DO UPDATE SET
         is_deleted = 1,
+        is_completed = 0,
+        completed_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     `).run(
       taskId,
       occurrenceDate
     );
+
+    db.prepare(`
+      DELETE FROM task_member_completions
+      WHERE task_id = ?
+        AND occurrence_date = ?
+    `).run(
+      taskId,
+      occurrenceDate
+    );
+
+    db.prepare(`
+      DELETE FROM family_star_transactions
+      WHERE task_id = ?
+        AND occurrence_date = ?
+        AND transaction_type = 'task'
+    `).run(
+      taskId,
+      occurrenceDate
+    );
+  });
+
+deleteOccurrence();
 
     res.json({
       success: true,
@@ -2185,14 +2211,33 @@ router.delete(
          * Remove stored occurrence state
          * that can no longer be reached.
          */
-        db.prepare(`
-          DELETE FROM task_occurrences
-          WHERE task_id = ?
-            AND occurrence_date >= ?
-        `).run(
-          taskId,
-          occurrenceDate
-        );
+db.prepare(`
+  DELETE FROM task_occurrences
+  WHERE task_id = ?
+    AND occurrence_date >= ?
+`).run(
+  taskId,
+  occurrenceDate
+);
+
+db.prepare(`
+  DELETE FROM task_member_completions
+  WHERE task_id = ?
+    AND occurrence_date >= ?
+`).run(
+  taskId,
+  occurrenceDate
+);
+
+db.prepare(`
+  DELETE FROM family_star_transactions
+  WHERE task_id = ?
+    AND occurrence_date >= ?
+    AND transaction_type = 'task'
+`).run(
+  taskId,
+  occurrenceDate
+);
       });
 
     transaction();
